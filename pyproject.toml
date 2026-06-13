@@ -3,14 +3,14 @@ requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
 
 [project]
-name = "privata"
+name = "test-privata"
 dynamic = ["version"]
 description = "A Python module privacy checker for keeping public interfaces intentional."
 readme = "README.md"
 requires-python = ">=3.12"
 license = "MIT"
 license-files = ["LICENSE"]
-authors = [{ name = "Bas Nijholt" }]
+authors = [{ name = "Colin Kennedy" }]
 keywords = [
   "architecture",
   "code-quality",
@@ -38,9 +38,7 @@ classifiers = [
 dependencies = []
 
 [project.urls]
-Documentation = "http://privata.nijho.lt/"
-Issues = "https://github.com/basnijholt/privata/issues"
-Repository = "https://github.com/basnijholt/privata"
+Repository = "https://github.com/ColinKennedy/privata"
 
 [project.optional-dependencies]
 dev = [
