@@ -1626,6 +1626,79 @@ y = m.GLOBAL_VALUE
     assert ("provider.module", "GLOBAL_VALUE") not in symbols
 
 
+def test_aliased_subpackage_import_deep_attribute_access_is_detected(tmp_path: Path) -> None:
+    """from pkg import sub followed by sub.mod.Symbol should count as cross-module usage."""
+    _write(tmp_path / "src" / "pkg" / "sub" / "__init__.py", "")
+    _write(
+        tmp_path / "src" / "pkg" / "sub" / "leaf.py",
+        """
+def get_value() -> int:
+    return 1
+""".strip()
+        + "\n",
+    )
+    _write(
+        tmp_path / "src" / "consumer" / "module.py",
+        """
+from pkg import sub
+
+result = sub.leaf.get_value()
+""".strip()
+        + "\n",
+    )
+
+    assert ("pkg.sub.leaf", "get_value") not in _symbols(tmp_path)
+
+
+def test_aliased_subpackage_aliased_import_deep_attribute_access_is_detected(
+    tmp_path: Path,
+) -> None:
+    """from pkg import sub as s followed by s.mod.Symbol should count as cross-module usage."""
+    _write(tmp_path / "src" / "pkg" / "sub" / "__init__.py", "")
+    _write(
+        tmp_path / "src" / "pkg" / "sub" / "leaf.py",
+        """
+def get_value() -> int:
+    return 1
+""".strip()
+        + "\n",
+    )
+    _write(
+        tmp_path / "src" / "consumer" / "module.py",
+        """
+from pkg import sub as s
+
+result = s.leaf.get_value()
+""".strip()
+        + "\n",
+    )
+
+    assert ("pkg.sub.leaf", "get_value") not in _symbols(tmp_path)
+
+
+def test_chained_attribute_on_call_result_base_is_ignored(tmp_path: Path) -> None:
+    """Attribute chains rooted in a call result should not be treated as module access."""
+    _write(
+        tmp_path / "src" / "pkg" / "source.py",
+        """
+VALUE = 1
+""".strip()
+        + "\n",
+    )
+    _write(
+        tmp_path / "src" / "pkg" / "consumer.py",
+        """
+def factory():
+    pass
+
+USED = factory().sub.VALUE
+""".strip()
+        + "\n",
+    )
+
+    assert ("pkg.source", "VALUE") in _symbols(tmp_path)
+
+
 def test_privata_is_clean_under_its_own_rules() -> None:
     """Privata should pass its own public-symbol check."""
     project_root = Path(__file__).resolve().parents[1]

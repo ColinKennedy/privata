@@ -9,6 +9,18 @@ from privata._models import Module, PrivateModuleImport, PrivateSymbolImport
 _SPLIT_MODULE_PART_COUNT = 2
 
 
+def _resolve_alias_prefix(base: str, import_aliases: dict[str, str]) -> str | None:
+    """Resolve a dotted base to a module by matching its longest alias prefix."""
+    parts = base.split(".")
+    for i in range(len(parts), 0, -1):
+        prefix = ".".join(parts[:i])
+        aliased = import_aliases.get(prefix)
+        if aliased is not None:
+            suffix = ".".join(parts[i:])
+            return f"{aliased}.{suffix}" if suffix else aliased
+    return None
+
+
 def _dotted_name(node: ast.expr) -> str | None:
     """Resolve a chained attribute expression to a dotted string, or None."""
     if isinstance(node, ast.Name):
@@ -111,14 +123,14 @@ def find_cross_imports(modules: dict[str, Module]) -> set[tuple[str, str]]:  # n
             if base in defined and base != consumer_name and attr in defined[base]:
                 used.add((base, attr))
             else:
-                aliased_module = import_aliases.get(base)
+                resolved = _resolve_alias_prefix(base, import_aliases)
                 if (
-                    aliased_module
-                    and aliased_module != consumer_name
-                    and aliased_module in defined
-                    and attr in defined[aliased_module]
+                    resolved
+                    and resolved != consumer_name
+                    and resolved in defined
+                    and attr in defined[resolved]
                 ):
-                    used.add((aliased_module, attr))
+                    used.add((resolved, attr))
 
     return used
 
