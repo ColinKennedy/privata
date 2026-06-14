@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
-import tomllib
+import sys
 from typing import TYPE_CHECKING
+
+if sys.version_info >= (3, 11):
+    import tomllib
+else:  # pragma: no cover
+    import tomli as tomllib
 
 if TYPE_CHECKING:
     from pathlib import Path
