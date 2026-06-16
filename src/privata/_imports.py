@@ -170,10 +170,12 @@ def collect_private_module_imports(modules: dict[str, Module]) -> list[PrivateMo
         if consumer.tree is None:
             continue
 
+        lines = consumer.path.read_text(encoding="utf-8").splitlines()
         for private_module_name, lineno in _find_private_imports_in_module(
             consumer,
             consumer.tree,
             private_modules,
+            lines,
         ):
             record(private_module_name, consumer, lineno)
 
@@ -212,6 +214,7 @@ def collect_private_symbol_imports(modules: dict[str, Module]) -> list[PrivateSy
         if consumer.tree is None:
             continue
 
+        lines = consumer.path.read_text(encoding="utf-8").splitlines()
         for node in ast.walk(consumer.tree):
             if not isinstance(node, ast.ImportFrom):
                 continue
@@ -222,6 +225,9 @@ def collect_private_symbol_imports(modules: dict[str, Module]) -> list[PrivateSy
                 node.module,
             )
             if source is None or source not in private_symbols:
+                continue
+
+            if _has_ignore_comment(lines, node.lineno):
                 continue
 
             for alias in node.names:
@@ -235,19 +241,29 @@ def collect_private_symbol_imports(modules: dict[str, Module]) -> list[PrivateSy
     )
 
 
+def _has_ignore_comment(lines: list[str], lineno: int) -> bool:
+    """Return True if the source line at lineno (1-indexed) contains # privata: ignore."""
+    return "# privata: ignore" in lines[lineno - 1]
+
+
 def _find_private_imports_in_module(
     consumer: Module,
     tree: ast.Module,
     private_modules: set[str],
+    lines: list[str],
 ) -> set[tuple[str, int]]:
     findings: set[tuple[str, int]] = set()
 
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
-            findings.update(_private_imports_from_import(node, private_modules))
+            for name, lineno in _private_imports_from_import(node, private_modules):
+                if not _has_ignore_comment(lines, lineno):
+                    findings.add((name, lineno))
             continue
         if isinstance(node, ast.ImportFrom):
-            findings.update(_private_imports_from_import_from(consumer, node, private_modules))
+            for name, lineno in _private_imports_from_import_from(consumer, node, private_modules):
+                if not _has_ignore_comment(lines, lineno):
+                    findings.add((name, lineno))
 
     return findings
 
