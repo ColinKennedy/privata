@@ -11,7 +11,7 @@ from privata._imports import (
     collect_private_symbol_imports,
     find_cross_imports,
 )
-from privata._modules import collect_modules
+from privata._modules import collect_modules, collect_test_consumers
 from privata._source_roots import source_roots
 
 if TYPE_CHECKING:
@@ -24,8 +24,10 @@ def _collect_privacy_findings(
     project_root: Path,
 ) -> tuple[list[Symbol], list[PrivateModuleImport], list[PrivateSymbolImport], list[ExportIssue]]:
     """Collect public-symbol and private-module boundary findings."""
-    modules = collect_modules(source_roots(project_root))
-    cross_imports = find_cross_imports(modules)
+    roots = source_roots(project_root)
+    modules = collect_modules(roots)
+    test_consumers = collect_test_consumers(roots)
+    cross_imports = find_cross_imports(modules, test_consumers)
     external_entrypoints = collect_external_entrypoints(project_root)
     public_interface_exports = load_tach_interface_exports(project_root)
 

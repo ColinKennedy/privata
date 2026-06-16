@@ -6,7 +6,7 @@ import ast
 from typing import TYPE_CHECKING
 
 from privata._models import Module, Symbol, SymbolCandidate
-from privata._source_roots import should_skip_source_file
+from privata._source_roots import is_test_module_filename, is_test_source_root, should_skip_source_file, should_skip_test_consumer
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -136,6 +136,34 @@ def collect_modules(source_roots: list[Path]) -> dict[str, Module]:  # noqa: C90
             modules[mod_name] = mod
 
     return modules
+
+
+def collect_test_consumers(source_roots: list[Path]) -> dict[str, Module]:
+    """Parse test files within test source roots for use as import consumers."""
+    consumers: dict[str, Module] = {}
+    for source_root in source_roots:
+        if not is_test_source_root(source_root):
+            continue
+        for py_file in sorted(source_root.rglob("*.py")):
+            name = py_file.name
+            if not is_test_module_filename(name):
+                continue
+            if should_skip_test_consumer(py_file, source_root):
+                continue
+            mod_name = _module_name_from_path(py_file, source_root)
+            assert mod_name is not None
+            source = py_file.read_text(encoding="utf-8")
+            try:
+                tree = ast.parse(source, filename=str(py_file))
+            except SyntaxError:
+                continue
+            consumers[mod_name] = Module(
+                name=mod_name,
+                path=py_file,
+                package_parts=_package_parts(mod_name),
+                tree=tree,
+            )
+    return consumers
 
 
 def _extract_all(tree: ast.Module) -> set[str] | None:
