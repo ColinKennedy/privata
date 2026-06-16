@@ -11,7 +11,7 @@ from privata._imports import (
     collect_private_symbol_imports,
     find_cross_imports,
 )
-from privata._modules import collect_modules
+from privata._modules import collect_modules, collect_test_consumers
 from privata._source_roots import source_roots
 
 if TYPE_CHECKING:
@@ -24,8 +24,10 @@ def _collect_privacy_findings(
     project_root: Path,
 ) -> tuple[list[Symbol], list[PrivateModuleImport], list[PrivateSymbolImport], list[ExportIssue]]:
     """Collect public-symbol and private-module boundary findings."""
-    modules = collect_modules(source_roots(project_root))
-    cross_imports = find_cross_imports(modules)
+    roots = source_roots(project_root)
+    modules = collect_modules(roots)
+    test_consumers = collect_test_consumers(roots)
+    cross_imports = find_cross_imports(modules, test_consumers)
     external_entrypoints = collect_external_entrypoints(project_root)
     public_interface_exports = load_tach_interface_exports(project_root)
 
@@ -108,7 +110,7 @@ def check_project(project_root: Path) -> int:
 def _print_private_candidates(candidates: list[Symbol], project_root: Path) -> None:
     print(f"Found {len(candidates)} public symbols that could be made private:\n")
     for symbol in candidates:
-        rel = symbol.path.relative_to(project_root)
+        rel = symbol.path.relative_to(project_root).as_posix()
         print(f"  {rel}:{symbol.lineno}: {symbol.kind} `{symbol.name}`")
 
 
@@ -122,7 +124,7 @@ def _print_private_module_imports(
         "private module imports outside their package subtree:\n",
     )
     for private_import in private_module_imports:
-        rel = private_import.imported_by_path.relative_to(project_root)
+        rel = private_import.imported_by_path.relative_to(project_root).as_posix()
         print(f"  {rel}:{private_import.lineno}: imports private module `{private_import.module}`")
 
 
@@ -134,7 +136,7 @@ def _print_private_symbol_imports(
         f"Found {len(private_symbol_imports)} private symbol imports from production modules:\n",
     )
     for private_import in private_symbol_imports:
-        rel = private_import.imported_by_path.relative_to(project_root)
+        rel = private_import.imported_by_path.relative_to(project_root).as_posix()
         print(
             f"  {rel}:{private_import.lineno}: imports private symbol "
             f"`{private_import.module}.{private_import.name}`",
@@ -144,7 +146,7 @@ def _print_private_symbol_imports(
 def _print_export_issues(export_issues: list[ExportIssue], project_root: Path) -> None:
     print(f"Found {len(export_issues)} __all__ export issues:\n")
     for export_issue in export_issues:
-        rel = export_issue.path.relative_to(project_root)
+        rel = export_issue.path.relative_to(project_root).as_posix()
         if export_issue.kind == "unknown":
             print(
                 f"  {rel}:{export_issue.lineno}: "

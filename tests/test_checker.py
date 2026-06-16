@@ -1370,6 +1370,93 @@ def test_checker_module_is_not_runtime_entrypoint(
     assert output.err == ""
 
 
+def test_test_source_root_consumers_count_for_publicness(tmp_path: Path) -> None:
+    """Symbols in a test source root used by co-located test files should not be flagged."""
+    _write(
+        tmp_path / "tests" / "something.py",
+        "def get_value() -> int:\n    return 42\n",
+    )
+    # snake_case test file
+    _write(
+        tmp_path / "tests" / "inner_folder" / "test_blah.py",
+        "import something\n\ndef test_value() -> None:\n    assert something.get_value() == 42\n",
+    )
+    # camelCase testFoo style
+    _write(
+        tmp_path / "tests" / "inner_folder" / "testHelper.py",
+        "import something\n\ndef testValue() -> None:\n    something.get_value()\n",
+    )
+    # camelCase fooTest style
+    _write(
+        tmp_path / "tests" / "inner_folder" / "helperTest.py",
+        "import something\n",
+    )
+    # test file inside a hidden subdir → skipped as consumer
+    _write(
+        tmp_path / "tests" / ".hidden" / "test_noise.py",
+        "import something\n",
+    )
+    # test file with broken syntax → skipped as consumer
+    _write(
+        tmp_path / "tests" / "test_broken.py",
+        "def bad(:\n",
+    )
+    _write(
+        tmp_path / "tach.toml",
+        'source_roots = ["tests"]\n',
+    )
+    assert ("something", "get_value") not in _symbols(tmp_path)
+
+
+def test_camelcase_test_files_do_not_count_as_consumers(tmp_path: Path) -> None:
+    """camelCase test filenames should not keep production symbols public."""
+    _write(
+        tmp_path / "pkg" / "module.py",
+        "def helper() -> int:\n    return 1\n",
+    )
+    _write(
+        tmp_path / "testModule.py",
+        "from pkg.module import helper\n",
+    )
+    _write(
+        tmp_path / "moduleTest.py",
+        "from pkg.module import helper\n",
+    )
+    assert ("pkg.module", "helper") in _symbols(tmp_path)
+
+
+def test_test_source_root_symbols_without_consumers_remain_flagged(tmp_path: Path) -> None:
+    """Symbols in a test source root with no test consumers are still private candidates."""
+    _write(
+        tmp_path / "tests" / "something.py",
+        "def get_value() -> int:\n    return 42\n",
+    )
+    _write(
+        tmp_path / "tach.toml",
+        'source_roots = ["tests"]\n',
+    )
+    assert ("something", "get_value") in _symbols(tmp_path)
+
+
+def test_test_source_root_partially_consumed_symbols(tmp_path: Path) -> None:
+    """In a test source root, used symbols are cleared while unused ones remain flagged."""
+    _write(
+        tmp_path / "tests" / "something.py",
+        "def get_value() -> int:\n    return 42\n\ndef get_bar() -> int:\n    return 0\n",
+    )
+    _write(
+        tmp_path / "tests" / "test_blah.py",
+        "import something\n\ndef test_value() -> None:\n    assert something.get_value() == 42\n",
+    )
+    _write(
+        tmp_path / "tach.toml",
+        'source_roots = ["tests"]\n',
+    )
+    symbols = _symbols(tmp_path)
+    assert ("something", "get_value") not in symbols
+    assert ("something", "get_bar") in symbols
+
+
 def test_privata_is_clean_under_its_own_rules() -> None:
     """Privata should pass its own public-symbol check."""
     project_root = Path(__file__).resolve().parents[1]
