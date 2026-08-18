@@ -20,7 +20,7 @@ It scans your production Python modules and reports five kinds of interface drif
 - literal `__all__` declarations that are stale, incomplete, or exporting names that do not exist
 
 It is designed for packages and applications where `helper()` should become `_helper()` once it is no longer part of the production interface.
-Test imports do not count, so tests can still reach internals without forcing those internals to stay public.
+Imports from a project's own tests do not count, so those tests can still reach internals without forcing them to stay public. Imports from another project's tests do count.
 
 ## Example
 
@@ -163,8 +163,8 @@ Detection of computed attribute names is deliberately shallow: it looks for `get
 Dispatch that Privata cannot see at all is **not supported** and will produce false positives. That includes a lookup table of bound methods assembled in another module, a name forwarded through `**kwargs`, `operator.attrgetter`, and anything reached through `eval` or `globals()`.
 If your code dispatches that way, use `__all__`, a Tach interface entry, or `# privata: ignore`.
 
-Privata intentionally ignores imports from `tests/`.
-If only tests import a symbol, Privata treats that symbol as private.
+Privata intentionally ignores imports from its own `tests/`.
+If a symbol is only imported by its own test suite, Privata treats that symbol as private. Imports from another project's test suite keep the symbol public.
 
 **Exception — test helper modules in a test source root:** when `tach.toml` lists a directory such as `tests/` under `source_roots`, non-test files inside that root (e.g. `tests/something.py`) are scanned as ordinary modules. Imports from co-located test files *do* count as cross-module usage in this case, because those helper modules exist solely to serve the test suite. A symbol that at least one test file imports is treated as public; a symbol that no test file imports is still flagged as a private candidate.
 For methods, a test file that imports a helper module certifies every method name that file mentions. Attribution is per file rather than per receiver, so a helper a test never imports is still checked, while a helper it does import is credited generously.
