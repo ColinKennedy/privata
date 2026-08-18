@@ -3554,6 +3554,57 @@ def test_run() -> None:
     assert _methods(core) == {("corepkg.service", "Service", "helper")}
 
 
+def test_relative_project_root_keeps_local_tests_local(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Relative library API calls should still classify in-project tests as local."""
+    core = tmp_path / "core"
+    engine = tmp_path / "engine"
+    _write(
+        core / "src" / "corepkg" / "api.py",
+        """
+def own_test_only() -> int:
+    return 1
+
+def external_test_only() -> int:
+    return 2
+""".strip()
+        + "\n",
+    )
+    _write(
+        core / "tests" / "test_api.py",
+        """
+from corepkg.api import own_test_only
+
+
+def test_own() -> None:
+    assert own_test_only() == 1
+""".strip()
+        + "\n",
+    )
+    _write(
+        engine / "tests" / "test_api.py",
+        """
+from corepkg.api import external_test_only
+
+
+def test_external() -> None:
+    assert external_test_only() == 2
+""".strip()
+        + "\n",
+    )
+    _write(
+        core / "tach.toml",
+        'source_roots = ["src", "tests", "../engine/tests"]\n',
+    )
+    monkeypatch.chdir(tmp_path)
+
+    symbols = _symbols(Path("core"))
+    assert ("corepkg.api", "own_test_only") in symbols
+    assert ("corepkg.api", "external_test_only") not in symbols
+
+
 def test_method_collection_skips_modules_without_a_tree() -> None:
     """Modules that failed to parse contribute no methods and no references."""
     module = Module(name="pkg.mod", path=Path("pkg/mod.py"), package_parts=("pkg",))

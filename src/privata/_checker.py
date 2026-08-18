@@ -156,6 +156,7 @@ def _collect_privacy_findings(
     the most expensive part of a run, and every caller knows whether it wants
     the answer.
     """
+    project_root = project_root.resolve()
     roots = source_roots(project_root)
     modules, unparsable_modules = collect_modules_with_errors(roots)
     local_test_roots, external_test_roots = _split_test_source_roots(project_root, roots)
