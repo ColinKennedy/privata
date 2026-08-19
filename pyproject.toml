@@ -3,7 +3,7 @@ requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
 
 [project]
-name = "privata"
+name = "test-privata"
 dynamic = ["version"]
 description = "A Python module privacy checker for keeping public interfaces intentional."
 readme = "README.md"
