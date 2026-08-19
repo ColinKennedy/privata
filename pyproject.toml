@@ -3,7 +3,7 @@ requires = ["maturin>=1.9,<2.0"]
 build-backend = "maturin"
 
 [project]
-name = "privata"
+name = "test-privata"
 dynamic = ["version"]
 description = "A Python module privacy checker for keeping public interfaces intentional."
 readme = "README.md"
