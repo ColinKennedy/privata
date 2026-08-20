@@ -2448,6 +2448,169 @@ def test_print_module_collisions_handles_paths_outside_project_root(
     assert sibling.resolve().as_posix() in output
 
 
+def test_print_private_candidates_handles_paths_outside_project_root(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A private-candidate symbol outside project_root is shown by absolute path, not a crash."""
+    libmain = tmp_path / "libmain"
+    app_a = tmp_path / "app_a"
+    _write(
+        libmain / "python" / "util" / "helpers.py",
+        "def unused_public_helper() -> int:\n    return 1\n",
+    )
+    _write(
+        app_a / "python" / "feature" / "consumer.py",
+        "def another_public_symbol() -> int:\n    return 2\n",
+    )
+    _write(
+        libmain / "tach.toml",
+        'source_roots = ["python", "../app_a/python"]\n',
+    )
+
+    assert cli_main([str(libmain)]) == 1
+
+    output = capsys.readouterr().out
+    assert "Found 2 public symbols that could be made private:" in output
+    assert "python/util/helpers.py:1: function `unused_public_helper`" in output
+    assert (app_a / "python" / "feature" / "consumer.py").resolve().as_posix() in output
+
+
+def test_print_method_candidates_handles_paths_outside_project_root(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A method candidate's class outside project_root is shown by absolute path, not a crash."""
+    core = tmp_path / "core"
+    sibling = tmp_path / "sibling"
+    _write(
+        sibling / "service.py",
+        """
+class Service:
+    def run(self) -> int:
+        return self.helper()
+
+    def helper(self) -> int:
+        return 1
+""".strip()
+        + "\n",
+    )
+    _write(
+        core / "src" / "app.py",
+        "from service import Service\n\n\ndef start() -> int:\n    return Service().run()\n",
+    )
+    _write(
+        core / "tach.toml",
+        'source_roots = ["src", "../sibling"]\n',
+    )
+
+    assert cli_main([str(core), "--methods"]) == 1
+
+    output = capsys.readouterr().out
+    assert "Found 1 public method in 1 class that could be made private:" in output
+    assert (sibling / "service.py").resolve().as_posix() in output
+    assert "class `Service` (1 of 2 public methods)" in output
+
+
+def test_print_private_module_imports_handles_paths_outside_project_root(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A private-module-import consumer outside project_root is shown by absolute path."""
+    core = tmp_path / "core"
+    sibling = tmp_path / "sibling"
+    _write(
+        core / "src" / "pkg" / "one" / "_internal.py",
+        "VALUE = 1\n",
+    )
+    _write(
+        sibling / "two" / "public.py",
+        "from pkg.one import _internal\n\nVALUE = _internal.VALUE\n",
+    )
+    _write(
+        core / "tach.toml",
+        'source_roots = ["src", "../sibling"]\n',
+    )
+
+    assert cli_main([str(core)]) == 1
+
+    output = capsys.readouterr().out
+    assert "Found 1 private module import outside the owning package subtree:" in output
+    assert (sibling / "two" / "public.py").resolve().as_posix() in output
+    assert "imports private module `pkg.one._internal`" in output
+
+
+def test_print_private_symbol_imports_handles_paths_outside_project_root(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A private-symbol-import consumer outside project_root is shown by absolute path."""
+    core = tmp_path / "core"
+    sibling = tmp_path / "sibling"
+    _write(
+        core / "src" / "pkg" / "producer.py",
+        "class _PrivateService:\n    pass\n",
+    )
+    _write(
+        sibling / "consumer.py",
+        "from pkg.producer import _PrivateService\n",
+    )
+    _write(
+        core / "tach.toml",
+        'source_roots = ["src", "../sibling"]\n',
+    )
+
+    assert cli_main([str(core)]) == 1
+
+    output = capsys.readouterr().out
+    assert "Found 1 private symbol import from production modules:" in output
+    assert (sibling / "consumer.py").resolve().as_posix() in output
+    assert "imports private symbol `pkg.producer._PrivateService`" in output
+
+
+def test_print_export_issues_handles_paths_outside_project_root(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """An __all__ export issue outside project_root is shown by absolute path, not a crash."""
+    core = tmp_path / "core"
+    sibling = tmp_path / "sibling"
+    _write(core / "src" / "marker.py", "VALUE = 1\n")
+    _write(sibling / "exports.py", '__all__ = ["MISSING"]\n')
+    _write(
+        core / "tach.toml",
+        'source_roots = ["src", "../sibling"]\n',
+    )
+
+    assert cli_main([str(core)]) == 1
+
+    output = capsys.readouterr().out
+    assert "Found 1 __all__ export issue:" in output
+    assert (sibling / "exports.py").resolve().as_posix() in output
+    assert "__all__ exports unknown name `MISSING`" in output
+
+
+def test_print_unparsable_modules_handles_paths_outside_project_root(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """An unparsable file outside project_root is shown by absolute path, not a crash."""
+    core = tmp_path / "core"
+    sibling = tmp_path / "sibling"
+    _write(core / "src" / "pkg" / "ok.py", "def helper() -> int:\n    return 1\n")
+    _write(sibling / "broken.py", "def oops(:\n    pass\n")
+    _write(
+        core / "tach.toml",
+        'source_roots = ["src", "../sibling"]\n',
+    )
+
+    assert cli_main([str(core)]) == 1
+
+    output = capsys.readouterr().out
+    assert "could not be parsed" in output
+    assert (sibling / "broken.py").resolve().as_posix() in output
+
+
 def test_unparsable_file_is_reported(tmp_path: Path) -> None:
     """A file that cannot be parsed is reported with its position and reason."""
     _write(tmp_path / "src" / "pkg" / "__init__.py", "")
