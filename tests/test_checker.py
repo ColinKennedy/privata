@@ -289,6 +289,34 @@ __all__ = ["PUBLIC_VALUE", "public_helper"]
     assert ("pkg.features.types", "local_helper") in symbols
 
 
+def test_package_init_self_reexport_is_skipped_via_package_reexports(
+    tmp_path: Path,
+) -> None:
+    """A symbol an ``__init__`` re-exports from its own package is not a candidate.
+
+    ``cross_imports`` certifies most ``__init__`` re-exports on its own, because the
+    ``__init__`` module doing the importing is itself scanned as a "consumer" of the
+    module it imports from -- see ``test_package_init_reexports_count_as_cross_module_imports``.
+    That certification has one blind spot: it explicitly ignores a module importing
+    from *itself*. A package ``__init__.py`` that both defines a symbol and re-imports
+    it through its own package name (a redundant but legal re-export idiom) hits that
+    blind spot, so only ``package_reexports`` -- not ``cross_imports`` -- certifies it.
+    """
+    _write(
+        tmp_path / "src" / "pkg" / "__init__.py",
+        """
+class Thing:
+    pass
+
+from pkg import Thing
+""".strip()
+        + "\n",
+    )
+
+    symbols = _symbols(tmp_path)
+    assert ("pkg", "Thing") not in symbols
+
+
 def test_tach_interface_exposed_symbols_are_skipped(tmp_path: Path) -> None:
     """Tach interface exposure marks a symbol as public even without src imports."""
     _write(

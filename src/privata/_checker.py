@@ -191,6 +191,7 @@ def _collect_privacy_findings(
         if (sym.module, sym.name) not in cross_imports
         and (sym.module, sym.name) not in external_entrypoints
         and (sym.module, sym.name) not in public_interface_exports
+        and (sym.module, sym.name) not in package_reexports
     ]
     candidates.sort(key=lambda s: (str(s.path), s.lineno))
     return _PrivacyFindings(
