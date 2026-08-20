@@ -453,6 +453,8 @@ def _maybe_add(
         return
     if ignored_names is not None and name in ignored_names:
         return
+    if candidate.lineno in mod.ignored_lines:
+        return
     mod.symbols.append(
         Symbol(
             name=name,
