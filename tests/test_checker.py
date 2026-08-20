@@ -769,6 +769,56 @@ class Dynamic(make_base().Base):
     assert ("pkg.models", "Dynamic") in symbols
 
 
+def test_registry_register_decorated_classes_are_skipped(tmp_path: Path) -> None:
+    """Classes decorated with a ``*.register``/``register_*`` call may be keyed on their name."""
+    _write(
+        tmp_path / "src" / "pkg" / "actions.py",
+        """
+class Registry:
+    _items: dict = {}
+
+    @classmethod
+    def register(cls, name=None):
+        def wrapper(obj):
+            cls._items[name or obj.__name__] = obj
+            return obj
+        return wrapper
+
+def register_action(obj):
+    return obj
+
+@Registry.register()
+class DeleteThing:
+    pass
+
+@Registry.register("x")
+class RenameThing:
+    pass
+
+@register_action
+class CreateThing:
+    pass
+
+class PlainThing:
+    pass
+
+decorators = [register_action]
+
+@decorators[0]
+class SubscriptDecorated:
+    pass
+""".strip()
+        + "\n",
+    )
+
+    symbols = _symbols(tmp_path)
+    assert ("pkg.actions", "DeleteThing") not in symbols
+    assert ("pkg.actions", "RenameThing") not in symbols
+    assert ("pkg.actions", "CreateThing") not in symbols
+    assert ("pkg.actions", "PlainThing") in symbols
+    assert ("pkg.actions", "SubscriptDecorated") in symbols
+
+
 def test_non_literal_all_does_not_hide_symbols(tmp_path: Path) -> None:
     """A dynamic ``__all__`` is ignored because it cannot be trusted statically."""
     _write(
