@@ -177,7 +177,7 @@ name = "exceptiongroup"
 version = "1.3.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "typing-extensions", marker = "python_full_version < '3.13'" },
+    { name = "typing-extensions" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/50/79/66800aadf48771f6b62f7eb014e352e5d06856655206165d775e675a02c9/exceptiongroup-1.3.1.tar.gz", hash = "sha256:8b412432c6055b0b7d14c310000ae93352ed6754f70fa8f7c34141f91c4e3219", size = 30371, upload-time = "2025-11-21T23:01:54.787Z" }
 wheels = [
@@ -552,51 +552,6 @@ wheels = [
 ]
 
 [[package]]
-name = "privata"
-source = { editable = "." }
-dependencies = [
-    { name = "tomli", marker = "python_full_version < '3.11'" },
-]
-
-[package.optional-dependencies]
-dev = [
-    { name = "mypy" },
-    { name = "pre-commit" },
-    { name = "pytest" },
-    { name = "pytest-cov" },
-    { name = "ruff" },
-    { name = "tomli" },
-    { name = "ty" },
-]
-
-[package.dev-dependencies]
-docs = [
-    { name = "markdown-code-runner" },
-    { name = "markdown-gfm-admonition" },
-    { name = "zensical" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.14" },
-    { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=4" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.4" },
-    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=7.1" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.13" },
-    { name = "tomli", marker = "python_full_version < '3.11'", specifier = ">=1.2.0" },
-    { name = "tomli", marker = "extra == 'dev'", specifier = ">=1.2.0" },
-    { name = "ty", marker = "extra == 'dev'" },
-]
-provides-extras = ["dev"]
-
-[package.metadata.requires-dev]
-docs = [
-    { name = "markdown-code-runner", specifier = ">=2.7.0" },
-    { name = "markdown-gfm-admonition" },
-    { name = "zensical" },
-]
-
-[[package]]
 name = "pygments"
 version = "2.20.0"
 source = { registry = "https://pypi.org/simple" }
@@ -750,6 +705,51 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/ea/f9/0ae446942c846b8266059ad8a30702a35afae55f5cdc54c5adf8d7afdc27/ruff-0.15.12-py3-none-win32.whl", hash = "sha256:d0185894e038d7043ba8fd6aee7499ece6462dc0ea9f1e260c7451807c714c20", size = 10657277, upload-time = "2026-04-24T18:17:18.591Z" },
     { url = "https://files.pythonhosted.org/packages/33/f1/9614e03e1cdcbf9437570b5400ced8a720b5db22b28d8e0f1bda429f660d/ruff-0.15.12-py3-none-win_amd64.whl", hash = "sha256:c87a162d61ab3adca47c03f7f717c68672edec7d1b5499e652331780fe74950d", size = 11837758, upload-time = "2026-04-24T18:17:00.113Z" },
     { url = "https://files.pythonhosted.org/packages/c0/98/6beb4b351e472e5f4c4613f7c35a5290b8be2497e183825310c4c3a3984b/ruff-0.15.12-py3-none-win_arm64.whl", hash = "sha256:a538f7a82d061cee7be55542aca1d86d1393d55d81d4fcc314370f4340930d4f", size = 11120821, upload-time = "2026-04-24T18:16:57.979Z" },
+]
+
+[[package]]
+name = "test-privata"
+source = { editable = "." }
+dependencies = [
+    { name = "tomli", marker = "python_full_version < '3.11'" },
+]
+
+[package.optional-dependencies]
+dev = [
+    { name = "mypy" },
+    { name = "pre-commit" },
+    { name = "pytest" },
+    { name = "pytest-cov" },
+    { name = "ruff" },
+    { name = "tomli" },
+    { name = "ty" },
+]
+
+[package.dev-dependencies]
+docs = [
+    { name = "markdown-code-runner" },
+    { name = "markdown-gfm-admonition" },
+    { name = "zensical" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.14" },
+    { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=4" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.4" },
+    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=7.1" },
+    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.13" },
+    { name = "tomli", marker = "python_full_version < '3.11'", specifier = ">=1.2.0" },
+    { name = "tomli", marker = "extra == 'dev'", specifier = ">=1.2.0" },
+    { name = "ty", marker = "extra == 'dev'" },
+]
+provides-extras = ["dev"]
+
+[package.metadata.requires-dev]
+docs = [
+    { name = "markdown-code-runner", specifier = ">=2.7.0" },
+    { name = "markdown-gfm-admonition" },
+    { name = "zensical" },
 ]
 
 [[package]]
