@@ -1712,6 +1712,25 @@ from pkg.one import (  # privata: ignore
     }
 
 
+def test_symbol_ignore_comment_suppresses_finding(tmp_path: Path) -> None:
+    """A # privata: ignore comment on the definition line suppresses the symbol finding."""
+    _write(
+        tmp_path / "src" / "pkg" / "plugins.py",
+        """
+class AlphaPlugin:  # privata: ignore
+    pass
+
+class BravoPlugin:
+    pass
+""".strip()
+        + "\n",
+    )
+
+    symbols = _symbols(tmp_path)
+    assert ("pkg.plugins", "AlphaPlugin") not in symbols
+    assert ("pkg.plugins", "BravoPlugin") in symbols
+
+
 def test_plain_import_chained_attribute_access_is_detected(tmp_path: Path) -> None:
     """import pkg.mod followed by pkg.mod.Symbol should count as cross-module usage."""
     _write(
