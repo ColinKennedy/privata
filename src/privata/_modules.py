@@ -127,7 +127,7 @@ def collect_modules_with_errors(  # noqa: C901, PLR0912
 
             for node in tree.body:
                 if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    if _is_framework_callback(node):
+                    if _is_framework_callback(node) or _is_pytest_fixture(node):
                         continue
                     _maybe_add(
                         mod,
@@ -269,6 +269,26 @@ def _is_framework_callback(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool
     return False
 
 
+def _is_pytest_fixture(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    """Detect ``@pytest.fixture`` / ``@fixture``, bare or called, decorating a function.
+
+    A fixture is consumed by pytest through parameter-name injection, never
+    by import, so it can never be seen as "used" by ``find_cross_imports``.
+    """
+    for decorator in node.decorator_list:
+        target = decorator.func if isinstance(decorator, ast.Call) else decorator
+        if isinstance(target, ast.Attribute) and target.attr == "fixture":
+            return True
+        if isinstance(target, ast.Name) and target.id == "fixture":
+            return True
+    return False
+
+
+def _is_pytest_hook_name(name: str) -> bool:
+    """``pytest_plugins`` and ``pytest_*`` hooks are consumed by pytest, not by import."""
+    return name.startswith("pytest_")
+
+
 def _framework_callback_names(node: ast.FunctionDef | ast.AsyncFunctionDef) -> set[str]:
     names: set[str] = set()
     expressions: list[ast.expr] = [*node.decorator_list]
@@ -402,7 +422,7 @@ def _maybe_add(
                 ),
             )
         return
-    if name in _ALLOWED_PUBLIC_NAMES:
+    if name in _ALLOWED_PUBLIC_NAMES or _is_pytest_hook_name(name):
         return
     if explicit_exports is not None and name in explicit_exports:
         return

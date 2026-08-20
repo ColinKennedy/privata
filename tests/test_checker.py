@@ -619,6 +619,128 @@ def create_item(*items: Item, item: Item = fallback(), **params: Params) -> Item
     assert ("pkg.api", "create_item") not in symbols
 
 
+def test_pytest_fixture_functions_are_skipped(tmp_path: Path) -> None:
+    """Fixtures are consumed via parameter-name injection, never import, in a production module."""
+    _write(
+        tmp_path / "src" / "pkg" / "testing.py",
+        """
+import pytest
+
+
+@pytest.fixture
+def sandbox_dir(tmp_path):
+    yield tmp_path
+
+
+@pytest.fixture()
+def bare_call_fixture():
+    yield None
+
+
+@pytest.fixture(scope="module")
+def scoped_fixture():
+    yield None
+
+
+def local_helper() -> int:
+    return 1
+""".strip()
+        + "\n",
+    )
+
+    symbols = _symbols(tmp_path)
+    assert ("pkg.testing", "sandbox_dir") not in symbols
+    assert ("pkg.testing", "bare_call_fixture") not in symbols
+    assert ("pkg.testing", "scoped_fixture") not in symbols
+    assert ("pkg.testing", "local_helper") in symbols
+
+
+def test_bare_fixture_decorator_is_skipped(tmp_path: Path) -> None:
+    """A fixture imported directly (``from pytest import fixture``) is still exempt."""
+    _write(
+        tmp_path / "src" / "pkg" / "testing.py",
+        """
+from pytest import fixture
+
+
+@fixture
+def sandbox_dir(tmp_path):
+    yield tmp_path
+
+
+@fixture()
+def other_fixture():
+    yield None
+""".strip()
+        + "\n",
+    )
+
+    symbols = _symbols(tmp_path)
+    assert ("pkg.testing", "sandbox_dir") not in symbols
+    assert ("pkg.testing", "other_fixture") not in symbols
+
+
+def test_async_pytest_fixture_is_skipped(tmp_path: Path) -> None:
+    """Async fixtures are exempt the same way as sync ones."""
+    _write(
+        tmp_path / "src" / "pkg" / "testing.py",
+        """
+import pytest
+
+
+@pytest.fixture
+async def async_sandbox_dir(tmp_path):
+    yield tmp_path
+""".strip()
+        + "\n",
+    )
+
+    symbols = _symbols(tmp_path)
+    assert ("pkg.testing", "async_sandbox_dir") not in symbols
+
+
+def test_pytest_plugins_variable_is_skipped(tmp_path: Path) -> None:
+    """``pytest_plugins`` is read by pytest itself, never imported."""
+    _write(
+        tmp_path / "src" / "pkg" / "conftest.py",
+        """
+pytest_plugins = ["pkg.fixtures"]
+
+local_helper_value = 1
+""".strip()
+        + "\n",
+    )
+
+    symbols = _symbols(tmp_path)
+    assert ("pkg.conftest", "pytest_plugins") not in symbols
+    assert ("pkg.conftest", "local_helper_value") in symbols
+
+
+def test_pytest_hook_functions_are_skipped(tmp_path: Path) -> None:
+    """``pytest_*`` hook functions are called by pytest itself, never imported."""
+    _write(
+        tmp_path / "src" / "pkg" / "conftest.py",
+        """
+def pytest_configure(config) -> None:
+    pass
+
+
+def pytest_collection_modifyitems(config, items) -> None:
+    pass
+
+
+def local_helper() -> int:
+    return 1
+""".strip()
+        + "\n",
+    )
+
+    symbols = _symbols(tmp_path)
+    assert ("pkg.conftest", "pytest_configure") not in symbols
+    assert ("pkg.conftest", "pytest_collection_modifyitems") not in symbols
+    assert ("pkg.conftest", "local_helper") in symbols
+
+
 def test_non_framework_decorators_and_dynamic_bases_are_handled(tmp_path: Path) -> None:
     """Plain decorators and dynamic bases should not crash name analysis."""
     _write(
