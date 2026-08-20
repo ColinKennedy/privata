@@ -133,11 +133,11 @@ def _merge_method_references(*reference_maps: dict[str, set[str]]) -> dict[str, 
     return merged
 
 
-def _external_test_method_references(
+def _standalone_test_method_references(
     modules: dict[str, Module],
     test_consumers: dict[str, Module],
 ) -> dict[str, set[str]]:
-    """Return names external test files mention for imported production modules."""
+    """Return names standalone test files (external or nested) mention for imported modules."""
     references: dict[str, set[str]] = {}
     for consumer in test_consumers.values():
         for module_name, names in referenced_names_by_module(consumer, modules).items():
@@ -160,13 +160,19 @@ def _collect_privacy_findings(
     roots = source_roots(project_root)
     modules, unparsable_modules = collect_modules_with_errors(roots)
     local_test_roots, external_test_roots = _split_test_source_roots(project_root, roots)
+    production_roots = [root for root in roots if not is_test_source_root(root)]
     local_test_consumers = collect_test_consumers(local_test_roots)
     external_test_consumers = collect_test_consumers(external_test_roots)
+    nested_test_consumers = collect_test_consumers([], production_roots)
     cross_imports = (
         find_cross_imports(modules)
         | find_cross_imports(
             modules,
             external_test_consumers,
+        )
+        | find_cross_imports(
+            modules,
+            nested_test_consumers,
         )
         | _test_helper_cross_imports(
             local_test_roots,
@@ -202,9 +208,13 @@ def _collect_privacy_findings(
                         modules,
                         local_test_consumers,
                     ),
-                    _external_test_method_references(
+                    _standalone_test_method_references(
                         modules,
                         external_test_consumers,
+                    ),
+                    _standalone_test_method_references(
+                        modules,
+                        nested_test_consumers,
                     ),
                 ),
             )

@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 
 from privata._imports import resolve_import_source
 from privata._methods._ast import referenced_names
+from privata._models import NAMESPACE_SEPARATOR
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -54,8 +55,8 @@ def _imported_known_modules(
             if source in known_modules:
                 imported.add(source)
             imported.update(
-                f"{source}.{alias.name}"
+                f"{source}{NAMESPACE_SEPARATOR}{alias.name}"
                 for alias in node.names
-                if f"{source}.{alias.name}" in known_modules
+                if f"{source}{NAMESPACE_SEPARATOR}{alias.name}" in known_modules
             )
     return imported

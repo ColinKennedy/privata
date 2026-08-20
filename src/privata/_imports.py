@@ -5,7 +5,12 @@ from __future__ import annotations
 import ast
 from typing import TYPE_CHECKING
 
-from privata._models import Module, PrivateModuleImport, PrivateSymbolImport
+from privata._models import (
+    NAMESPACE_SEPARATOR,
+    Module,
+    PrivateModuleImport,
+    PrivateSymbolImport,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -17,13 +22,13 @@ _SPLIT_MODULE_PART_COUNT = 2
 
 def _resolve_alias_prefix(base: str, import_aliases: dict[str, str]) -> str | None:
     """Resolve a dotted base to a module by matching its longest alias prefix."""
-    parts = base.split(".")
+    parts = base.split(NAMESPACE_SEPARATOR)
     for i in range(len(parts), 0, -1):
-        prefix = ".".join(parts[:i])
+        prefix = NAMESPACE_SEPARATOR.join(parts[:i])
         aliased = import_aliases.get(prefix)
         if aliased is not None:
-            suffix = ".".join(parts[i:])
-            return f"{aliased}.{suffix}" if suffix else aliased
+            suffix = NAMESPACE_SEPARATOR.join(parts[i:])
+            return f"{aliased}{NAMESPACE_SEPARATOR}{suffix}" if suffix else aliased
     return None
 
 
@@ -35,24 +40,26 @@ def _dotted_name(node: ast.expr) -> str | None:
         parent = _dotted_name(node.value)
         if parent is None:
             return None
-        return f"{parent}.{node.attr}"
+        return f"{parent}{NAMESPACE_SEPARATOR}{node.attr}"
     return None
 
 
 def _is_private_module_name(module_name: str) -> bool:
     """Return whether any segment of a dotted module path is private."""
-    return any(part.startswith("_") for part in module_name.split("."))
+    return any(part.startswith("_") for part in module_name.split(NAMESPACE_SEPARATOR))
 
 
 def _private_module_owner_package(module_name: str) -> str:
     """Return the package that owns a private module."""
-    parts = module_name.rsplit(".", 1)
+    parts = module_name.rsplit(NAMESPACE_SEPARATOR, 1)
     return parts[0] if len(parts) == _SPLIT_MODULE_PART_COUNT else module_name
 
 
 def _module_is_within_package(module_name: str, package_name: str) -> bool:
     """Return whether a module is inside a package subtree."""
-    return module_name == package_name or module_name.startswith(f"{package_name}.")
+    return module_name == package_name or module_name.startswith(
+        f"{package_name}{NAMESPACE_SEPARATOR}",
+    )
 
 
 def resolve_import_source(
@@ -69,8 +76,8 @@ def resolve_import_source(
         return None
     base = list(importer_package[: len(importer_package) - up])
     if module_attr:
-        base.extend(module_attr.split("."))
-    return ".".join(base) if base else None
+        base.extend(module_attr.split(NAMESPACE_SEPARATOR))
+    return NAMESPACE_SEPARATOR.join(base) if base else None
 
 
 def find_cross_imports(  # noqa: C901, PLR0912
@@ -122,7 +129,7 @@ def find_cross_imports(  # noqa: C901, PLR0912
                                 used.add((source, public_symbol))
                         continue
 
-                    submodule = f"{source}.{sym}"
+                    submodule = f"{source}{NAMESPACE_SEPARATOR}{sym}"
                     if submodule in known:
                         local = alias.asname or sym
                         import_aliases[local] = submodule
@@ -314,8 +321,8 @@ def _private_imports_from_import_from(
         findings.add((source, node.lineno))
 
     findings.update(
-        (f"{source}.{alias.name}", alias.lineno)
+        (f"{source}{NAMESPACE_SEPARATOR}{alias.name}", alias.lineno)
         for alias in node.names
-        if alias.name != "*" and f"{source}.{alias.name}" in private_modules
+        if alias.name != "*" and f"{source}{NAMESPACE_SEPARATOR}{alias.name}" in private_modules
     )
     return findings
