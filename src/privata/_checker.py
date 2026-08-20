@@ -338,7 +338,7 @@ def _print_module_collisions(collisions: list[ModuleCollision], project_root: Pa
         "may be incomplete:\n",
     )
     for collision in collisions:
-        rels = ", ".join(path.relative_to(project_root).as_posix() for path in collision.paths)
+        rels = ", ".join(_display_path(path, project_root) for path in collision.paths)
         print(f"  module `{collision.module}` is defined by: {rels}")
 
 
@@ -375,6 +375,18 @@ def _print_method_candidates(methods: list[Method], project_root: Path) -> None:
         names = ", ".join(f"{method.name}:{method.lineno}" for method in found)
         for line in textwrap.wrap(names, width=_METHOD_LIST_WIDTH, break_long_words=False):
             print(f"{_METHOD_LIST_INDENT}{line}")
+
+
+def _display_path(path: Path, project_root: Path) -> str:
+    """Return a path relative to the project root, or the absolute path if it lies outside it.
+
+    A colliding source root (e.g. a sibling project's ``tests`` directory listed
+    in ``tach.toml`` ``source_roots``) can sit outside ``project_root`` entirely,
+    where ``relative_to`` would raise.
+    """
+    if path.is_relative_to(project_root):
+        return path.relative_to(project_root).as_posix()
+    return path.as_posix()
 
 
 def _count(number: int, singular: str, plural: str | None = None) -> str:
