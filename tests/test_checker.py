@@ -1831,6 +1831,30 @@ class BravoPlugin:
     assert ("pkg.plugins", "BravoPlugin") in symbols
 
 
+def test_symbol_ignore_comment_suppresses_bare_function_finding(tmp_path: Path) -> None:
+    """A # privata: ignore comment on a bare, non-decorated function's def line suppresses it.
+
+    Covers framework hooks invoked by naming convention (e.g. a compatibility shim
+    that imports a module and calls a conventionally-named function on it) where no
+    decorator or import ties the function to its caller.
+    """
+    _write(
+        tmp_path / "src" / "pkg" / "sitehook.py",
+        """
+def update_members(members: dict[str, list[str]]) -> None:  # privata: ignore
+    members["Widgets"].append("SomeValidator")
+
+def other_func() -> None:
+    pass
+""".strip()
+        + "\n",
+    )
+
+    symbols = _symbols(tmp_path)
+    assert ("pkg.sitehook", "update_members") not in symbols
+    assert ("pkg.sitehook", "other_func") in symbols
+
+
 def test_plain_import_chained_attribute_access_is_detected(tmp_path: Path) -> None:
     """import pkg.mod followed by pkg.mod.Symbol should count as cross-module usage."""
     _write(
