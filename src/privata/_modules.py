@@ -174,7 +174,10 @@ def collect_modules_with_errors(  # noqa: C901, PLR0912
                             ignored_names=framework_related_names,
                         )
 
-            modules[mod_name] = mod
+            # A later source root must not evict an already-collected module: the
+            # collision is real (and collect_module_collisions reports it), but
+            # dropping the first file found would silently stop scanning it.
+            modules.setdefault(mod_name, mod)
 
     return modules, unparsable
 

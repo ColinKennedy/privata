@@ -2119,6 +2119,54 @@ def test_duplicate_source_roots_are_not_collisions(tmp_path: Path) -> None:
     assert _module_collisions(tmp_path) == {}
 
 
+def test_module_collision_does_not_evict_first_source_roots_module(tmp_path: Path) -> None:
+    """The first source root's module survives a name collision instead of being evicted."""
+    _write(
+        tmp_path / "src" / "utils.py",
+        "def first_root_helper() -> int:\n    return 1\n",
+    )
+    _write(
+        tmp_path / "other" / "utils.py",
+        "def second_root_helper() -> int:\n    return 2\n",
+    )
+    _write(
+        tmp_path / "tach.toml",
+        'source_roots = ["src", "other"]\n',
+    )
+
+    symbols = _symbols(tmp_path)
+    assert ("utils", "first_root_helper") in symbols
+    assert _module_collisions(tmp_path) == {"utils": ["other/utils.py", "src/utils.py"]}
+
+
+def test_print_module_collisions_handles_paths_outside_project_root(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A colliding path outside project_root is shown by absolute path, not a crash."""
+    core = tmp_path / "core"
+    sibling = tmp_path / "sibling"
+    _write(
+        core / "src" / "utils.py",
+        "def production_helper() -> int:\n    return 1\n",
+    )
+    _write(
+        sibling / "utils.py",
+        "def sibling_helper() -> int:\n    return 2\n",
+    )
+    _write(
+        core / "tach.toml",
+        'source_roots = ["src", "../sibling"]\n',
+    )
+
+    assert cli_main([str(core)]) == 1
+
+    output = capsys.readouterr().out
+    assert "Found 1 module name defined by multiple files" in output
+    assert "src/utils.py" in output
+    assert sibling.resolve().as_posix() in output
+
+
 def test_unparsable_file_is_reported(tmp_path: Path) -> None:
     """A file that cannot be parsed is reported with its position and reason."""
     _write(tmp_path / "src" / "pkg" / "__init__.py", "")
