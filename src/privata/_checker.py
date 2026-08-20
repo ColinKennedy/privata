@@ -145,6 +145,35 @@ def _standalone_test_method_references(
     return references
 
 
+def _scope_findings_to_project(
+    findings: _PrivacyFindings,
+    project_root: Path,
+) -> _PrivacyFindings:
+    """Drop findings that live outside ``project_root``.
+
+    Out-of-project ``source_roots`` are reference context: they exist so a symbol
+    defined here can be seen as used by a sibling project. Defects *inside* those
+    siblings belong to the siblings' own runs, not to this one. Module collisions
+    are kept whole, since a collision is inherently a statement about two roots.
+    """
+
+    def owned(path: Path) -> bool:
+        return path.is_relative_to(project_root)
+
+    return findings._replace(
+        unparsable_modules=[m for m in findings.unparsable_modules if owned(m.path)],
+        candidates=[s for s in findings.candidates if owned(s.path)],
+        method_candidates=[m for m in findings.method_candidates if owned(m.path)],
+        private_module_imports=[
+            i for i in findings.private_module_imports if owned(i.imported_by_path)
+        ],
+        private_symbol_imports=[
+            i for i in findings.private_symbol_imports if owned(i.imported_by_path)
+        ],
+        export_issues=[e for e in findings.export_issues if owned(e.path)],
+    )
+
+
 def _collect_privacy_findings(
     project_root: Path,
     *,
@@ -194,7 +223,7 @@ def _collect_privacy_findings(
         and (sym.module, sym.name) not in package_reexports
     ]
     candidates.sort(key=lambda s: (str(s.path), s.lineno))
-    return _PrivacyFindings(
+    findings = _PrivacyFindings(
         unparsable_modules=unparsable_modules,
         candidates=candidates,
         method_candidates=(
@@ -227,6 +256,7 @@ def _collect_privacy_findings(
         export_issues=collect_export_issues(modules),
         module_collisions=collect_module_collisions(roots),
     )
+    return _scope_findings_to_project(findings, project_root)
 
 
 def find_unparsable_modules(project_root: Path) -> list[UnparsableModule]:
