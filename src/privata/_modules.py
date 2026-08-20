@@ -138,6 +138,8 @@ def collect_modules_with_errors(  # noqa: C901, PLR0912
                     if _is_pydantic_model(node, pydantic_model_names):
                         pydantic_model_names.add(node.name)
                         continue
+                    if _is_registered_class(node):
+                        continue
                     _maybe_add(
                         mod,
                         SymbolCandidate(node.name, "class", node.lineno),
@@ -329,6 +331,29 @@ def _is_pydantic_model(node: ast.ClassDef, known_models: set[str]) -> bool:
             return True
         short = base_name.rsplit(".", 1)[-1]
         if short in known_models:
+            return True
+    return False
+
+
+def _is_registered_class(node: ast.ClassDef) -> bool:
+    """A class decorated by a ``*.register`` / ``register_*`` call is reachable via a registry.
+
+    The lookup key is often the class name itself (e.g. a bare
+    ``obj.__name__`` default), so it cannot be safely renamed to ``_Name``
+    even though nothing imports the class directly. This is shape-based, not
+    argument-based: it deliberately does not inspect the registry
+    implementation or the decorator's arguments, so it also exempts
+    registries that key on something other than the class name.
+    """
+    for decorator in node.decorator_list:
+        target = decorator.func if isinstance(decorator, ast.Call) else decorator
+        if isinstance(target, ast.Attribute):
+            name = target.attr
+        elif isinstance(target, ast.Name):
+            name = target.id
+        else:
+            continue
+        if name == "register" or name.startswith("register_"):
             return True
     return False
 
