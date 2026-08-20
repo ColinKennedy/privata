@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 from privata._methods._ast import dotted_name as _dotted_name
 from privata._methods._ast import referenced_names as _referenced_names_in_tree
-from privata._models import Method
+from privata._models import NAMESPACE_SEPARATOR, Method
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping
@@ -36,7 +36,8 @@ _SAFE_CLASS_DECORATORS = frozenset(
     },
 )
 _SAFE_DECORATOR_ROOTS = frozenset(
-    name.split(".", 1)[0] for name in _SAFE_METHOD_DECORATORS | _SAFE_CLASS_DECORATORS
+    name.split(NAMESPACE_SEPARATOR, 1)[0]
+    for name in _SAFE_METHOD_DECORATORS | _SAFE_CLASS_DECORATORS
 )
 _BUILTIN_ALIASES = {
     "classmethod": "builtins.classmethod",
@@ -163,7 +164,7 @@ def _class_method_candidates(
             _update_aliases(aliases, node)
             continue
         checkable = _is_checkable_method(node, aliases)
-        aliases[node.name] = f"{_LOCAL_DECORATOR_PREFIX}.{node.name}"
+        aliases[node.name] = f"{_LOCAL_DECORATOR_PREFIX}{NAMESPACE_SEPARATOR}{node.name}"
         if not checkable:
             continue
         if id(node) in protected_methods:
@@ -222,7 +223,7 @@ def _protected_method_nodes(class_node: ast.ClassDef) -> set[int]:  # noqa: C901
             if name in current_methods:
                 protected.add(id(current_methods[name]))
         for name in _bound_names(node):
-            previous = current_methods.pop(name.split(".", 1)[0], None)
+            previous = current_methods.pop(name.split(NAMESPACE_SEPARATOR, 1)[0], None)
             if previous is not None:
                 protected.add(id(previous))
     return protected
@@ -335,13 +336,13 @@ def _resolved_name(node: ast.expr, aliases: Mapping[str, str]) -> str | None:
     dotted = _dotted_name(node)
     if dotted is None:
         return None
-    parts = dotted.split(".")
+    parts = dotted.split(NAMESPACE_SEPARATOR)
     for index in range(len(parts), 0, -1):
-        prefix = ".".join(parts[:index])
+        prefix = NAMESPACE_SEPARATOR.join(parts[:index])
         resolved = aliases.get(prefix)
         if resolved is not None:
-            suffix = ".".join(parts[index:])
-            return f"{resolved}.{suffix}" if suffix else resolved
+            suffix = NAMESPACE_SEPARATOR.join(parts[index:])
+            return f"{resolved}{NAMESPACE_SEPARATOR}{suffix}" if suffix else resolved
     return dotted
 
 
@@ -362,7 +363,7 @@ def _decorator_aliases(
 def _update_aliases(aliases: dict[str, str], node: ast.stmt) -> None:
     if isinstance(node, ast.Import):
         for alias in node.names:
-            local = alias.asname or alias.name.split(".", 1)[0]
+            local = alias.asname or alias.name.split(NAMESPACE_SEPARATOR, 1)[0]
             imported = alias.name if alias.asname else local
             aliases[local] = imported
     elif isinstance(node, ast.ImportFrom):
@@ -370,12 +371,12 @@ def _update_aliases(aliases: dict[str, str], node: ast.stmt) -> None:
         for alias in node.names:
             if alias.name == "*":
                 for name in {*aliases, *_SAFE_DECORATOR_ROOTS}:
-                    aliases[name] = f"{_LOCAL_DECORATOR_PREFIX}.{name}"
+                    aliases[name] = f"{_LOCAL_DECORATOR_PREFIX}{NAMESPACE_SEPARATOR}{name}"
             else:
-                aliases[alias.asname or alias.name] = f"{source}.{alias.name}"
+                aliases[alias.asname or alias.name] = f"{source}{NAMESPACE_SEPARATOR}{alias.name}"
     else:
         for name in _bound_names(node):
-            aliases[name] = f"{_LOCAL_DECORATOR_PREFIX}.{name}"
+            aliases[name] = f"{_LOCAL_DECORATOR_PREFIX}{NAMESPACE_SEPARATOR}{name}"
 
 
 class _BoundNameCollector(ast.NodeVisitor):
@@ -398,7 +399,7 @@ class _BoundNameCollector(ast.NodeVisitor):
 
     def visit_Import(self, node: ast.Import) -> None:
         for alias in node.names:
-            self.names.add(alias.asname or alias.name.split(".", 1)[0])
+            self.names.add(alias.asname or alias.name.split(NAMESPACE_SEPARATOR, 1)[0])
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
         for alias in node.names:

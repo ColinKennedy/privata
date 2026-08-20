@@ -6,6 +6,7 @@ import ast
 from typing import TYPE_CHECKING
 
 from privata._models import (
+    NAMESPACE_SEPARATOR,
     Module,
     ModuleCollision,
     Symbol,
@@ -14,6 +15,7 @@ from privata._models import (
 )
 from privata._source_roots import (
     is_in_ignored_directory,
+    is_nested_test_file,
     is_test_module_filename,
     should_skip_source_file,
 )
@@ -49,17 +51,17 @@ def _module_name_from_path(py_file: Path, source_root: Path) -> str | None:
         parts = parts[:-1]
     if not parts:
         return None
-    return ".".join(parts)
+    return NAMESPACE_SEPARATOR.join(parts)
 
 
 def _package_parts(module_name: str, *, is_package_init: bool = False) -> tuple[str, ...]:
     """Return the package path used to resolve relative imports."""
     if is_package_init:
-        return tuple(module_name.split("."))
-    parts = module_name.rsplit(".", 1)
+        return tuple(module_name.split(NAMESPACE_SEPARATOR))
+    parts = module_name.rsplit(NAMESPACE_SEPARATOR, 1)
     if len(parts) == 1:
         return ()
-    return tuple(parts[0].split("."))
+    return tuple(parts[0].split(NAMESPACE_SEPARATOR))
 
 
 def _ignored_lines(source: str) -> frozenset[int]:
@@ -211,8 +213,18 @@ def collect_module_collisions(source_roots: list[Path]) -> list[ModuleCollision]
     ]
 
 
-def collect_test_consumers(test_source_roots: list[Path]) -> dict[str, Module]:
-    """Parse test files under test source roots for use as import consumers only."""
+def collect_test_consumers(
+    test_source_roots: list[Path],
+    nested_test_roots: list[Path] | None = None,
+) -> dict[str, Module]:
+    """Parse test files for use as import consumers only.
+
+    ``test_source_roots`` are roots that are themselves test directories, so
+    every file matching a test-file naming convention counts. ``nested_test_roots``
+    are production roots: ``collect_modules_with_errors`` already discards their
+    test-shaped files via ``should_skip_source_file``, which otherwise leaves them
+    neither scanned as modules nor counted as consumers of anything they import.
+    """
     consumers: dict[str, Module] = {}
     for source_root in test_source_roots:
         for py_file in sorted(source_root.rglob("*.py")):
@@ -220,20 +232,34 @@ def collect_test_consumers(test_source_roots: list[Path]) -> dict[str, Module]:
                 continue
             if is_in_ignored_directory(py_file, source_root):
                 continue
-            # Test filenames are never __init__.py, so the name derivation cannot be empty.
-            mod_name = ".".join(py_file.relative_to(source_root).with_suffix("").parts)
-            source = py_file.read_text(encoding="utf-8")
-            try:
-                tree = ast.parse(source, filename=str(py_file))
-            except SyntaxError:
+            _add_test_consumer(consumers, py_file, source_root)
+    for source_root in nested_test_roots or ():
+        for py_file in sorted(source_root.rglob("*.py")):
+            if not is_nested_test_file(py_file, source_root):
                 continue
-            consumers[mod_name] = Module(
-                name=mod_name,
-                path=py_file,
-                package_parts=_package_parts(mod_name),
-                tree=tree,
-            )
+            _add_test_consumer(consumers, py_file, source_root)
     return consumers
+
+
+def _add_test_consumer(
+    consumers: dict[str, Module],
+    py_file: Path,
+    source_root: Path,
+) -> None:
+    mod_name = NAMESPACE_SEPARATOR.join(
+        py_file.relative_to(source_root).with_suffix("").parts,
+    )
+    source = py_file.read_text(encoding="utf-8")
+    try:
+        tree = ast.parse(source, filename=str(py_file))
+    except SyntaxError:
+        return
+    consumers[mod_name] = Module(
+        name=mod_name,
+        path=py_file,
+        package_parts=_package_parts(mod_name),
+        tree=tree,
+    )
 
 
 def _extract_all(tree: ast.Module) -> set[str] | None:
@@ -252,7 +278,7 @@ def _dotted_name(node: ast.expr) -> str | None:
         parent = _dotted_name(node.value)
         if parent is None:
             return None
-        return f"{parent}.{node.attr}"
+        return f"{parent}{NAMESPACE_SEPARATOR}{node.attr}"
     return None
 
 
@@ -355,7 +381,7 @@ def _is_pydantic_model(node: ast.ClassDef, known_models: set[str]) -> bool:
             continue
         if base_name == "BaseModel" or base_name.endswith(".BaseModel"):
             return True
-        short = base_name.rsplit(".", 1)[-1]
+        short = base_name.rsplit(NAMESPACE_SEPARATOR, 1)[-1]
         if short in known_models:
             return True
     return False
@@ -390,7 +416,7 @@ def _is_framework_constructor_call(node: ast.expr) -> bool:
     callee = _dotted_name(node.func)
     if callee is None:
         return False
-    short = callee.rsplit(".", 1)[-1]
+    short = callee.rsplit(NAMESPACE_SEPARATOR, 1)[-1]
     return short in _FRAMEWORK_CONSTRUCTORS
 
 
@@ -400,7 +426,7 @@ def _is_type_parameter_call(node: ast.expr) -> bool:
     callee = _dotted_name(node.func)
     if callee is None:
         return False
-    short = callee.rsplit(".", 1)[-1]
+    short = callee.rsplit(NAMESPACE_SEPARATOR, 1)[-1]
     return short in _TYPE_PARAMETER_CONSTRUCTORS
 
 

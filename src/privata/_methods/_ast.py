@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import ast
 
+from privata._models import NAMESPACE_SEPARATOR
+
 
 def dotted_name(node: ast.expr) -> str | None:
     if isinstance(node, ast.Name):
@@ -12,7 +14,7 @@ def dotted_name(node: ast.expr) -> str | None:
         parent = dotted_name(node.value)
         if parent is None:
             return None
-        return f"{parent}.{node.attr}"
+        return f"{parent}{NAMESPACE_SEPARATOR}{node.attr}"
     return None
 
 

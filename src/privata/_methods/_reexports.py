@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 
 from privata._imports import resolve_import_source
 from privata._methods._ast import dotted_name as _dotted_name
+from privata._models import NAMESPACE_SEPARATOR
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping
@@ -49,7 +50,8 @@ def collect_reexports(modules: Mapping[str, Module]) -> set[tuple[str, str]]:
                     is_package_init=is_package_init,
                 ):
                     continue
-                if f"{source}.{alias.name}" not in modules and alias.name in defined:
+                submodule = f"{source}{NAMESPACE_SEPARATOR}{alias.name}"
+                if submodule not in modules and alias.name in defined:
                     reexports.add((source, alias.name))
     return reexports
 

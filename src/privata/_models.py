@@ -9,6 +9,8 @@ if TYPE_CHECKING:
     import ast
     from pathlib import Path
 
+NAMESPACE_SEPARATOR = "."
+
 
 @dataclass
 class Symbol:
