@@ -14,6 +14,7 @@ from privata._models import (
 )
 from privata._source_roots import (
     is_in_ignored_directory,
+    is_nested_test_file,
     is_test_module_filename,
     should_skip_source_file,
 )
@@ -203,8 +204,18 @@ def collect_module_collisions(source_roots: list[Path]) -> list[ModuleCollision]
     ]
 
 
-def collect_test_consumers(test_source_roots: list[Path]) -> dict[str, Module]:
-    """Parse test files under test source roots for use as import consumers only."""
+def collect_test_consumers(
+    test_source_roots: list[Path],
+    nested_test_roots: list[Path] | None = None,
+) -> dict[str, Module]:
+    """Parse test files for use as import consumers only.
+
+    ``test_source_roots`` are roots that are themselves test directories, so
+    every file matching a test-file naming convention counts. ``nested_test_roots``
+    are production roots: ``collect_modules_with_errors`` already discards their
+    test-shaped files via ``should_skip_source_file``, which otherwise leaves them
+    neither scanned as modules nor counted as consumers of anything they import.
+    """
     consumers: dict[str, Module] = {}
     for source_root in test_source_roots:
         for py_file in sorted(source_root.rglob("*.py")):
@@ -212,20 +223,32 @@ def collect_test_consumers(test_source_roots: list[Path]) -> dict[str, Module]:
                 continue
             if is_in_ignored_directory(py_file, source_root):
                 continue
-            # Test filenames are never __init__.py, so the name derivation cannot be empty.
-            mod_name = ".".join(py_file.relative_to(source_root).with_suffix("").parts)
-            source = py_file.read_text(encoding="utf-8")
-            try:
-                tree = ast.parse(source, filename=str(py_file))
-            except SyntaxError:
+            _add_test_consumer(consumers, py_file, source_root)
+    for source_root in nested_test_roots or ():
+        for py_file in sorted(source_root.rglob("*.py")):
+            if not is_nested_test_file(py_file, source_root):
                 continue
-            consumers[mod_name] = Module(
-                name=mod_name,
-                path=py_file,
-                package_parts=_package_parts(mod_name),
-                tree=tree,
-            )
+            _add_test_consumer(consumers, py_file, source_root)
     return consumers
+
+
+def _add_test_consumer(
+    consumers: dict[str, Module],
+    py_file: Path,
+    source_root: Path,
+) -> None:
+    mod_name = ".".join(py_file.relative_to(source_root).with_suffix("").parts)
+    source = py_file.read_text(encoding="utf-8")
+    try:
+        tree = ast.parse(source, filename=str(py_file))
+    except SyntaxError:
+        return
+    consumers[mod_name] = Module(
+        name=mod_name,
+        path=py_file,
+        package_parts=_package_parts(mod_name),
+        tree=tree,
+    )
 
 
 def _extract_all(tree: ast.Module) -> set[str] | None:

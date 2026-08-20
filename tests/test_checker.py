@@ -1118,24 +1118,20 @@ def helper() -> int:
 """.strip()
         + "\n",
     )
-    _write(
-        tmp_path / "tests" / "test_module.py",
-        """
-from pkg.module import helper
-""".strip()
-        + "\n",
-    )
 
     assert ("pkg.module", "helper") in _symbols(tmp_path)
 
 
-def test_root_level_test_files_are_ignored_in_project_root_fallback(tmp_path: Path) -> None:
-    """Root-level pytest modules should not count as production imports."""
+def test_root_level_test_files_certify_imports_in_project_root_fallback(tmp_path: Path) -> None:
+    """Root-level pytest modules should count as production imports, like any other test file."""
     _write(
         tmp_path / "pkg" / "module.py",
         """
 def helper() -> int:
     return 1
+
+def unused() -> int:
+    return 2
 """.strip()
         + "\n",
     )
@@ -1154,11 +1150,15 @@ from pkg.module import helper as imported_helper
         + "\n",
     )
 
-    assert ("pkg.module", "helper") in _symbols(tmp_path)
+    symbols = _symbols(tmp_path)
+    assert ("pkg.module", "helper") not in symbols
+    assert ("pkg.module", "unused") in symbols
 
 
-def test_root_test_files_are_ignored_when_scanning_project_root(tmp_path: Path) -> None:
-    """Root-level test files should not keep production symbols public."""
+def test_nested_tests_directory_certifies_imports_when_scanning_project_root(
+    tmp_path: Path,
+) -> None:
+    """A tests/ directory nested inside a production root should certify its imports."""
     _write(
         tmp_path / "pkg" / "module.py",
         """
@@ -1168,14 +1168,14 @@ def helper() -> int:
         + "\n",
     )
     _write(
-        tmp_path / "test_module.py",
+        tmp_path / "pkg" / "tests" / "test_module.py",
         """
 from pkg.module import helper
 """.strip()
         + "\n",
     )
 
-    assert ("pkg.module", "helper") in _symbols(tmp_path)
+    assert ("pkg.module", "helper") not in _symbols(tmp_path)
 
 
 def test_tach_source_roots_define_scanned_roots(tmp_path: Path) -> None:
@@ -2006,8 +2006,8 @@ def test_test_source_root_consumers_do_not_count_for_production_modules(
     assert ("pkg.module", "helper") in _symbols(tmp_path)
 
 
-def test_camelcase_test_files_do_not_count_as_consumers(tmp_path: Path) -> None:
-    """camelCase test filenames should not keep production symbols public."""
+def test_camelcase_test_files_count_as_consumers(tmp_path: Path) -> None:
+    """camelCase test filenames nested in a production root should certify their imports."""
     _write(
         tmp_path / "pkg" / "module.py",
         "def helper() -> int:\n    return 1\n",
@@ -2020,7 +2020,7 @@ def test_camelcase_test_files_do_not_count_as_consumers(tmp_path: Path) -> None:
         tmp_path / "moduleTest.py",
         "from pkg.module import helper\n",
     )
-    assert ("pkg.module", "helper") in _symbols(tmp_path)
+    assert ("pkg.module", "helper") not in _symbols(tmp_path)
 
 
 def test_test_source_root_symbols_without_consumers_remain_flagged(tmp_path: Path) -> None:
@@ -2053,6 +2053,118 @@ def test_test_source_root_partially_consumed_symbols(tmp_path: Path) -> None:
     symbols = _symbols(tmp_path)
     assert ("something", "get_value") not in symbols
     assert ("something", "get_bar") in symbols
+
+
+def test_test_file_nested_in_production_source_root_certifies_import(tmp_path: Path) -> None:
+    """A tests/ dir nested inside a declared production root should certify its imports."""
+    _write(
+        tmp_path / "src" / "pkg" / "helpers.py",
+        "def thing() -> int:\n    return 1\n",
+    )
+    _write(
+        tmp_path / "src" / "pkg" / "tests" / "test_x.py",
+        "from pkg.helpers import thing\n\ndef test_thing() -> None:\n    assert thing() == 1\n",
+    )
+    _write(
+        tmp_path / "tach.toml",
+        'source_roots = ["src"]\n',
+    )
+    assert ("pkg.helpers", "thing") not in _symbols(tmp_path)
+
+
+def test_test_file_nested_in_production_source_root_is_not_itself_scanned(
+    tmp_path: Path,
+) -> None:
+    """A nested test file's own definitions are not treated as production symbols."""
+    _write(
+        tmp_path / "src" / "pkg" / "widgets" / "registry.py",
+        "class WidgetRegistry:\n    pass\n",
+    )
+    _write(
+        tmp_path / "src" / "pkg" / "widgets" / "tests" / "test_widgets.py",
+        "from pkg.widgets.registry import WidgetRegistry\n\n"
+        "def test_registry() -> None:\n    assert WidgetRegistry() is not None\n",
+    )
+    _write(
+        tmp_path / "tach.toml",
+        'source_roots = ["src"]\n',
+    )
+    assert ("pkg.widgets.registry", "WidgetRegistry") not in _symbols(tmp_path)
+    assert "pkg.widgets.tests.test_widgets" not in {
+        module.module for module in find_private_candidates(tmp_path)
+    }
+
+
+def test_nested_test_consumers_only_certify_what_they_import(tmp_path: Path) -> None:
+    """A nested test file only certifies the symbols it actually imports."""
+    _write(
+        tmp_path / "src" / "pkg" / "helpers.py",
+        "def used() -> int:\n    return 1\n\ndef unused() -> int:\n    return 2\n",
+    )
+    _write(
+        tmp_path / "src" / "pkg" / "tests" / "test_x.py",
+        "from pkg.helpers import used\n",
+    )
+    _write(
+        tmp_path / "tach.toml",
+        'source_roots = ["src"]\n',
+    )
+    symbols = _symbols(tmp_path)
+    assert ("pkg.helpers", "used") not in symbols
+    assert ("pkg.helpers", "unused") in symbols
+
+
+def test_test_shaped_files_under_other_ignored_directories_are_not_swept(
+    tmp_path: Path,
+) -> None:
+    """Only test-shaped files count as nested consumers, not unrelated ignored directories."""
+    _write(
+        tmp_path / "src" / "pkg" / "helpers.py",
+        "def thing() -> int:\n    return 1\n",
+    )
+    _write(
+        tmp_path / "src" / ".venv" / "site-packages" / "test_thing.py",
+        "from pkg.helpers import thing\n",
+    )
+    _write(
+        tmp_path / "tach.toml",
+        'source_roots = ["src"]\n',
+    )
+    assert ("pkg.helpers", "thing") in _symbols(tmp_path)
+
+
+def test_nested_test_consumers_certify_helper_methods(tmp_path: Path) -> None:
+    """A test file nested inside a production root should certify method usage too."""
+    _write(
+        tmp_path / "src" / "pkg" / "service.py",
+        """
+class Service:
+    def used(self) -> int:
+        return 1
+
+    def unused(self) -> int:
+        return 2
+""".strip()
+        + "\n",
+    )
+    _write(
+        tmp_path / "src" / "pkg" / "tests" / "test_service.py",
+        """
+from pkg.service import Service
+
+
+def test_used() -> None:
+    assert Service().used() == 1
+""".strip()
+        + "\n",
+    )
+    _write(
+        tmp_path / "tach.toml",
+        'source_roots = ["src"]\n',
+    )
+    methods = _methods(tmp_path)
+    assert ("pkg.service", "Service", "used") not in methods
+    assert ("pkg.service", "Service", "unused") in methods
 
 
 def test_module_name_collision_across_source_roots(tmp_path: Path) -> None:

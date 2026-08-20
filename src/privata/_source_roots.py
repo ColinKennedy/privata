@@ -96,3 +96,25 @@ def is_in_ignored_directory(py_file: Path, source_root: Path) -> bool:
 def is_test_source_root(source_root: Path) -> bool:
     """Return whether a source root is itself a test directory by name."""
     return source_root.name in _IGNORED_SOURCE_DIR_NAMES
+
+
+def is_nested_test_file(py_file: Path, source_root: Path) -> bool:
+    """Return whether a file is test-shaped source nested inside a production root.
+
+    ``should_skip_source_file`` already discards these from the production module
+    scan, either by filename pattern or because they sit under a nested ``tests/``
+    directory. This identifies that same set of files so they can be swept up as
+    test consumers instead of silently disappearing. Files skipped for unrelated
+    reasons (build output, caches, venvs, hidden directories) are excluded: they
+    are not test code, and some of them (a ``.venv``, say) can contain unrelated
+    third-party files that happen to match the test naming convention.
+    """
+    rel_parts = py_file.relative_to(source_root).parts
+    dir_parts = rel_parts[:-1]
+    other_ignored_dir_names = _IGNORED_SOURCE_DIR_NAMES - {"tests"}
+    if any(
+        part in other_ignored_dir_names or (part.startswith(".") and part != ".")
+        for part in dir_parts
+    ):
+        return False
+    return is_test_module_filename(py_file.name) or "tests" in dir_parts
