@@ -171,8 +171,12 @@ For methods, a test file that imports a helper module certifies every method nam
 
 ## Development
 
+Privata's checker logic is implemented in Rust (`crates/privata-core`) and exposed to Python
+through a small PyO3 extension. A Rust toolchain is required for local development.
+
 ```bash
-uv run pytest  # enforces 100% coverage
+cargo test --workspace   # checker logic and its unit tests
+uv run pytest            # Python binding surface (find_*, the CLI, __version__)
 uv run pre-commit run --all-files
 uv build
 ```

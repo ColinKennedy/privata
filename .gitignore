@@ -10,4 +10,8 @@ build/
 site/
 *.egg-info/
 .privata/
-src/privata/_version.py
+target/
+*.pyd
+*.pdb
+*.so
+python/privata/__pycache__/

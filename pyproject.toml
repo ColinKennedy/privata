@@ -1,6 +1,6 @@
 [build-system]
-requires = ["hatchling", "hatch-vcs"]
-build-backend = "hatchling.build"
+requires = ["maturin>=1.9,<2.0"]
+build-backend = "maturin"
 
 [project]
 name = "privata"
@@ -37,7 +37,7 @@ classifiers = [
   "Topic :: Software Development :: Libraries :: Python Modules",
   "Topic :: Utilities",
 ]
-dependencies = ["tomli>=1.2.0; python_version < '3.11'"]
+dependencies = []
 
 [project.urls]
 Documentation = "http://privata.nijho.lt/"
@@ -49,13 +49,14 @@ dev = [
   "mypy>=1.14",
   "pre-commit>=4",
   "pytest>=8.4",
-  "pytest-cov>=7.1",
   "ruff>=0.13",
-  "tomli>=1.2.0",
   "ty",
 ]
 
 [dependency-groups]
+dev = [
+    "maturin>=1.9,<2.0",
+]
 docs = [
   "markdown-code-runner>=2.7.0",
   "markdown-gfm-admonition",
@@ -65,23 +66,13 @@ docs = [
 [project.scripts]
 privata = "privata.cli:main"
 
-[tool.hatch.version]
-source = "vcs"
-
-[tool.hatch.build.hooks.vcs]
-version-file = "src/privata/_version.py"
-
-[tool.hatch.build.targets.wheel]
-packages = ["src/privata"]
+[tool.maturin]
+manifest-path = "crates/privata-python/Cargo.toml"
+python-source = "python"
+module-name = "privata._privata"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]
-addopts = [
-  "--cov=privata",
-  "--cov-report=term-missing",
-  "--cov-fail-under=100",
-]
 
 [tool.ruff]
 line-length = 100

@@ -1,0 +1,19 @@
+[package]
+name = "privata-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ruff_python_parser = "0.0.9"
+ruff_python_ast = "0.0.9"
+ruff_source_file = "0.0.9"
+ruff_text_size = "0.0.9"
+toml = "0.9"
+serde = { version = "1", features = ["derive"] }
+regex = "1"
+walkdir = "2"
+dunce = "1"
+
+[dev-dependencies]
+tempfile = "3"

@@ -6,7 +6,7 @@ import argparse
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from privata._checker import check_project
+from privata._privata import check_project
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -40,7 +40,11 @@ def _build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the Privata module privacy checker."""
     args = _build_parser().parse_args(argv)
-    return check_project(args.project_root, include_methods=args.methods)
+    # The scan runs in Rust; printing happens here so pytest's capsys (which
+    # patches sys.stdout, not the OS file descriptor) can see CLI output.
+    text, exit_code = check_project(str(args.project_root), args.methods)
+    print(text, end="")
+    return exit_code
 
 
 if __name__ == "__main__":
