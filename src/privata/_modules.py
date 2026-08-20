@@ -36,6 +36,7 @@ _ROUTE_DECORATORS = {
 }
 _CLI_DECORATORS = {"callback", "command"}
 _FRAMEWORK_CONSTRUCTORS = {"APIRouter", "FastAPI", "Typer"}
+_TYPE_PARAMETER_CONSTRUCTORS = {"TypeVar", "ParamSpec", "TypeVarTuple"}
 _FRAMEWORK_REGISTRATION_CALLS = {"add_api_route", "add_api_websocket_route", "include_router"}
 _ALLOWED_PUBLIC_NAMES = {"logger"}
 
@@ -145,7 +146,9 @@ def collect_modules_with_errors(  # noqa: C901, PLR0912
                         ignored_names=framework_related_names,
                     )
                 elif isinstance(node, ast.Assign):
-                    if _is_framework_constructor_call(node.value):
+                    if _is_framework_constructor_call(node.value) or _is_type_parameter_call(
+                        node.value,
+                    ):
                         continue
                     for target in node.targets:
                         for name in names_from_target(target):
@@ -156,7 +159,10 @@ def collect_modules_with_errors(  # noqa: C901, PLR0912
                                 ignored_names=framework_related_names,
                             )
                 elif isinstance(node, ast.AnnAssign) and node.target:
-                    if node.value is not None and _is_framework_constructor_call(node.value):
+                    if node.value is not None and (
+                        _is_framework_constructor_call(node.value)
+                        or _is_type_parameter_call(node.value)
+                    ):
                         continue
                     for name in names_from_target(node.target):
                         _maybe_add(
@@ -341,6 +347,16 @@ def _is_framework_constructor_call(node: ast.expr) -> bool:
         return False
     short = callee.rsplit(".", 1)[-1]
     return short in _FRAMEWORK_CONSTRUCTORS
+
+
+def _is_type_parameter_call(node: ast.expr) -> bool:
+    if not isinstance(node, ast.Call):
+        return False
+    callee = _dotted_name(node.func)
+    if callee is None:
+        return False
+    short = callee.rsplit(".", 1)[-1]
+    return short in _TYPE_PARAMETER_CONSTRUCTORS
 
 
 def _strings_from_node(node: ast.expr) -> set[str] | None:

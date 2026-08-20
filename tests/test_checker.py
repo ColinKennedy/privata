@@ -1012,6 +1012,56 @@ router: APIRouter = APIRouter()
     assert ("pkg.api", "router") not in _symbols(tmp_path)
 
 
+def test_typevar_and_paramspec_assignments_are_skipped(tmp_path: Path) -> None:
+    """TypeVar/ParamSpec/TypeVarTuple assignments are not public API surface."""
+    _write(
+        tmp_path / "src" / "pkg" / "collections.py",
+        """
+from typing import ParamSpec, TypeVar, TypeVarTuple
+
+T = TypeVar("T")
+P = ParamSpec("P")
+Ts = TypeVarTuple("Ts")
+""".strip()
+        + "\n",
+    )
+
+    symbols = _symbols(tmp_path)
+    assert ("pkg.collections", "T") not in symbols
+    assert ("pkg.collections", "P") not in symbols
+    assert ("pkg.collections", "Ts") not in symbols
+
+
+def test_dotted_typevar_assignment_is_skipped(tmp_path: Path) -> None:
+    """A ``typing.TypeVar(...)`` call qualified by module is also skipped."""
+    _write(
+        tmp_path / "src" / "pkg" / "aliases.py",
+        """
+import typing
+
+T = typing.TypeVar("T")
+""".strip()
+        + "\n",
+    )
+
+    assert ("pkg.aliases", "T") not in _symbols(tmp_path)
+
+
+def test_annotated_typevar_assignment_is_skipped(tmp_path: Path) -> None:
+    """Annotated TypeVar assignments should not be flagged either."""
+    _write(
+        tmp_path / "src" / "pkg" / "api.py",
+        """
+from typing import TypeVar
+
+T: TypeVar = TypeVar("T")
+""".strip()
+        + "\n",
+    )
+
+    assert ("pkg.api", "T") not in _symbols(tmp_path)
+
+
 def test_pyproject_ignores_malformed_entrypoints(tmp_path: Path) -> None:
     """Only string entrypoints with module:symbol shape are public."""
     _write(
