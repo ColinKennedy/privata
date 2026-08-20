@@ -10,4 +10,4 @@ crate-type = ["cdylib"]
 
 [dependencies]
 privata-core = { path = "../privata-core" }
-pyo3 = { version = "0.27", features = ["extension-module"] }
+pyo3 = { version = "0.27", features = ["extension-module", "abi3-py310"] }
