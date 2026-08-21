@@ -2,6 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use rayon::prelude::*;
 use ruff_python_ast::visitor::{walk_expr, walk_pattern, walk_stmt, Visitor};
 use ruff_python_ast::{Expr, ExprContext, Pattern, Stmt, StmtClassDef, StmtFunctionDef};
 use ruff_source_file::LineIndex;
@@ -68,41 +69,47 @@ pub fn collect_method_candidates(
     let references = references_by_module(modules);
     let base_names = base_class_names(modules);
 
-    let mut candidates = Vec::new();
-    for module in modules.values() {
-        let Some(tree) = &module.tree else { continue };
-        let Some(line_index) = &module.line_index else {
-            continue;
-        };
-        for node in &tree.body {
-            let Stmt::ClassDef(class_node) = node else {
-                continue;
+    let mut candidates: Vec<Method> = modules
+        .par_iter()
+        .flat_map_iter(|(_, module)| {
+            let mut module_candidates = Vec::new();
+            let Some(tree) = &module.tree else {
+                return module_candidates;
             };
-            let class_lineno = lineno_at(line_index, class_node.name.range.start());
-            let decorator_aliases = decorator_aliases_before(tree, class_lineno, line_index);
-            if !is_checkable_class(
-                node,
-                class_node,
-                module,
-                interface,
-                &decorator_aliases,
-                &base_names,
-            ) {
-                continue;
-            }
+            let Some(line_index) = &module.line_index else {
+                return module_candidates;
+            };
             let empty = HashSet::new();
             let module_test_references = extra_references.get(&module.name).unwrap_or(&empty);
-            candidates.extend(class_method_candidates(
-                module,
-                line_index,
-                class_node,
-                class_lineno,
-                &references,
-                module_test_references,
-                &decorator_aliases,
-            ));
-        }
-    }
+            for node in &tree.body {
+                let Stmt::ClassDef(class_node) = node else {
+                    continue;
+                };
+                let class_lineno = lineno_at(line_index, class_node.name.range.start());
+                let decorator_aliases = decorator_aliases_before(tree, class_lineno, line_index);
+                if !is_checkable_class(
+                    node,
+                    class_node,
+                    module,
+                    interface,
+                    &decorator_aliases,
+                    &base_names,
+                ) {
+                    continue;
+                }
+                module_candidates.extend(class_method_candidates(
+                    module,
+                    line_index,
+                    class_node,
+                    class_lineno,
+                    &references,
+                    module_test_references,
+                    &decorator_aliases,
+                ));
+            }
+            module_candidates
+        })
+        .collect();
 
     candidates.sort_by(|a, b| {
         (a.path.to_string_lossy(), a.lineno).cmp(&(b.path.to_string_lossy(), b.lineno))
@@ -111,15 +118,23 @@ pub fn collect_method_candidates(
 }
 
 fn references_by_module(modules: &HashMap<String, Module>) -> HashMap<String, HashSet<String>> {
+    let pairs: Vec<(String, String)> = modules
+        .par_iter()
+        .flat_map_iter(|(module_name, module)| {
+            let names = module
+                .tree
+                .as_ref()
+                .map(|tree| crate::ast_utils::referenced_names(&tree.body))
+                .unwrap_or_default();
+            names
+                .into_iter()
+                .map(move |name| (name, module_name.clone()))
+        })
+        .collect();
+
     let mut references: HashMap<String, HashSet<String>> = HashMap::new();
-    for (module_name, module) in modules {
-        let Some(tree) = &module.tree else { continue };
-        for name in crate::ast_utils::referenced_names(&tree.body) {
-            references
-                .entry(name)
-                .or_default()
-                .insert(module_name.clone());
-        }
+    for (name, module_name) in pairs {
+        references.entry(name).or_default().insert(module_name);
     }
     references
 }
@@ -144,17 +159,23 @@ fn base_class_names(modules: &HashMap<String, Module>) -> HashSet<String> {
             walk_stmt(self, stmt);
         }
     }
-    let mut collector = BaseCollector {
-        names: HashSet::new(),
-    };
-    for module in modules.values() {
-        if let Some(tree) = &module.tree {
-            for stmt in &tree.body {
-                collector.visit_stmt(stmt);
+    modules
+        .par_iter()
+        .map(|(_, module)| {
+            let mut collector = BaseCollector {
+                names: HashSet::new(),
+            };
+            if let Some(tree) = &module.tree {
+                for stmt in &tree.body {
+                    collector.visit_stmt(stmt);
+                }
             }
-        }
-    }
-    collector.names
+            collector.names
+        })
+        .reduce(HashSet::new, |mut a, b| {
+            a.extend(b);
+            a
+        })
 }
 
 /// Return the trailing names of every base expression.
@@ -232,12 +253,10 @@ fn class_method_candidates(
         if test_references.contains(f.name.id.as_str()) {
             continue;
         }
-        let mut referencing = references
+        let referenced_elsewhere = references
             .get(f.name.id.as_str())
-            .cloned()
-            .unwrap_or_default();
-        referencing.remove(&module.name);
-        if !referencing.is_empty() {
+            .is_some_and(|referencing| referencing.iter().any(|m| m != &module.name));
+        if referenced_elsewhere {
             continue;
         }
         out.push(Method {

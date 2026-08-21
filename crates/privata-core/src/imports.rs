@@ -2,6 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use rayon::prelude::*;
 use ruff_python_ast::visitor::{walk_body, walk_expr, Visitor};
 use ruff_python_ast::{Expr, Stmt};
 
@@ -193,18 +194,22 @@ pub fn find_cross_imports(
         .collect();
     let consumers_ref = consumers.unwrap_or(modules);
 
-    let mut used = HashSet::new();
-    for (consumer_name, consumer) in consumers_ref {
-        let Some(tree) = &consumer.tree else { continue };
-        used.extend(cross_imports_in_tree(
-            tree,
-            &consumer.package_parts,
-            consumer_name,
-            &known,
-            &defined,
-        ));
-    }
-    used
+    consumers_ref
+        .par_iter()
+        .filter_map(|(consumer_name, consumer)| {
+            let tree = consumer.tree.as_ref()?;
+            Some(cross_imports_in_tree(
+                tree,
+                &consumer.package_parts,
+                consumer_name,
+                &known,
+                &defined,
+            ))
+        })
+        .reduce(HashSet::new, |mut a, b| {
+            a.extend(b);
+            a
+        })
 }
 
 /// The per-consumer body of [`find_cross_imports`], usable directly by
@@ -305,40 +310,48 @@ pub fn collect_private_module_imports(
         .cloned()
         .collect();
 
+    let per_consumer: Vec<((String, String, u32), PrivateModuleImport)> = modules
+        .par_iter()
+        .filter_map(|(_, consumer)| {
+            let tree = consumer.tree.as_ref()?;
+            let mut pass = PrivateModuleImportPass {
+                consumer,
+                private_modules: &private_modules,
+                findings: HashSet::new(),
+            };
+            walk_body(&mut pass, &tree.body);
+
+            let mut local = Vec::new();
+            for (private_module_name, lineno) in pass.findings {
+                if consumer.ignored_lines.contains(&lineno) {
+                    continue;
+                }
+                if private_module_name == consumer.name {
+                    continue;
+                }
+                let owner_package = private_module_owner_package(&private_module_name);
+                if module_is_within_package(&consumer.name, &owner_package) {
+                    continue;
+                }
+                local.push((
+                    (private_module_name.clone(), consumer.name.clone(), lineno),
+                    PrivateModuleImport {
+                        module: private_module_name.clone(),
+                        path: modules[&private_module_name].path.clone(),
+                        imported_by: consumer.name.clone(),
+                        imported_by_path: consumer.path.clone(),
+                        lineno,
+                    },
+                ));
+            }
+            Some(local)
+        })
+        .flatten()
+        .collect();
+
     let mut findings: HashMap<(String, String, u32), PrivateModuleImport> = HashMap::new();
-
-    for consumer in modules.values() {
-        if consumer.tree.is_none() {
-            continue;
-        }
-        let mut pass = PrivateModuleImportPass {
-            consumer,
-            private_modules: &private_modules,
-            findings: HashSet::new(),
-        };
-        walk_body(&mut pass, &consumer.tree.as_ref().unwrap().body);
-
-        for (private_module_name, lineno) in pass.findings {
-            if consumer.ignored_lines.contains(&lineno) {
-                continue;
-            }
-            if private_module_name == consumer.name {
-                continue;
-            }
-            let owner_package = private_module_owner_package(&private_module_name);
-            if module_is_within_package(&consumer.name, &owner_package) {
-                continue;
-            }
-            findings
-                .entry((private_module_name.clone(), consumer.name.clone(), lineno))
-                .or_insert_with(|| PrivateModuleImport {
-                    module: private_module_name.clone(),
-                    path: modules[&private_module_name].path.clone(),
-                    imported_by: consumer.name.clone(),
-                    imported_by_path: consumer.path.clone(),
-                    lineno,
-                });
-        }
+    for (key, finding) in per_consumer {
+        findings.entry(key).or_insert(finding);
     }
 
     let mut result: Vec<PrivateModuleImport> = findings.into_values().collect();
@@ -409,35 +422,43 @@ pub fn collect_private_symbol_imports(
         })
         .collect();
 
-    let mut findings: HashMap<(String, String, String, u32), PrivateSymbolImport> = HashMap::new();
+    let per_consumer: Vec<((String, String, String, u32), PrivateSymbolImport)> = modules
+        .par_iter()
+        .filter_map(|(_, consumer)| {
+            let tree = consumer.tree.as_ref()?;
+            let mut pass = PrivateSymbolImportPass {
+                consumer,
+                private_symbols: &private_symbols,
+                findings: HashSet::new(),
+            };
+            walk_body(&mut pass, &tree.body);
 
-    for consumer in modules.values() {
-        if consumer.tree.is_none() {
-            continue;
-        }
-        let mut pass = PrivateSymbolImportPass {
-            consumer,
-            private_symbols: &private_symbols,
-            findings: HashSet::new(),
-        };
-        walk_body(&mut pass, &consumer.tree.as_ref().unwrap().body);
-
-        for (source, name, lineno) in pass.findings {
-            if source == consumer.name {
-                continue;
+            let mut local = Vec::new();
+            for (source, name, lineno) in pass.findings {
+                if source == consumer.name {
+                    continue;
+                }
+                let symbol = private_symbols[&source][&name];
+                local.push((
+                    (source.clone(), name.clone(), consumer.name.clone(), lineno),
+                    PrivateSymbolImport {
+                        module: source.clone(),
+                        name: name.clone(),
+                        path: symbol.path.clone(),
+                        imported_by: consumer.name.clone(),
+                        imported_by_path: consumer.path.clone(),
+                        lineno,
+                    },
+                ));
             }
-            let symbol = private_symbols[&source][&name];
-            findings
-                .entry((source.clone(), name.clone(), consumer.name.clone(), lineno))
-                .or_insert_with(|| PrivateSymbolImport {
-                    module: source.clone(),
-                    name: name.clone(),
-                    path: symbol.path.clone(),
-                    imported_by: consumer.name.clone(),
-                    imported_by_path: consumer.path.clone(),
-                    lineno,
-                });
-        }
+            Some(local)
+        })
+        .flatten()
+        .collect();
+
+    let mut findings: HashMap<(String, String, String, u32), PrivateSymbolImport> = HashMap::new();
+    for (key, finding) in per_consumer {
+        findings.entry(key).or_insert(finding);
     }
 
     let mut result: Vec<PrivateSymbolImport> = findings.into_values().collect();

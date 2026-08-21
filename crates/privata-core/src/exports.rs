@@ -2,6 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use rayon::prelude::*;
 use ruff_python_ast::{Expr, ModModule, Stmt};
 
 use crate::ast_utils::{lineno_at, names_from_target, string_literal_set, NAMESPACE_SEPARATOR};
@@ -11,55 +12,61 @@ const IGNORED_PUBLIC_BINDINGS: &[&str] = &["logger"];
 
 /// Return mismatches between literal `__all__` and public bindings.
 pub fn collect_export_issues(modules: &HashMap<String, Module>) -> Vec<ExportIssue> {
-    let mut issues = Vec::new();
+    let mut issues: Vec<ExportIssue> = modules
+        .par_iter()
+        .flat_map_iter(|(_, module)| {
+            let mut module_issues = Vec::new();
+            let Some(tree) = &module.tree else {
+                return module_issues;
+            };
+            let Some(index) = &module.line_index else {
+                return module_issues;
+            };
 
-    for module in modules.values() {
-        let Some(tree) = &module.tree else { continue };
-        let Some(index) = &module.line_index else {
-            continue;
-        };
+            let (Some(all_names), all_offset) = literal_all(tree) else {
+                return module_issues;
+            };
+            let lineno = lineno_at(index, all_offset);
 
-        let (Some(all_names), all_offset) = literal_all(tree) else {
-            continue;
-        };
-        let lineno = lineno_at(index, all_offset);
+            let all_bindings = collect_all_bindings(tree);
+            let public_bindings = collect_public_bindings(tree);
 
-        let all_bindings = collect_all_bindings(tree);
-        let public_bindings = collect_public_bindings(tree);
+            let mut unknown: Vec<&String> = all_names.difference(&all_bindings).collect();
+            unknown.sort();
+            module_issues.extend(unknown.into_iter().map(|name| ExportIssue {
+                module: module.name.clone(),
+                path: module.path.clone(),
+                name: name.clone(),
+                kind: ExportIssueKind::Unknown,
+                lineno,
+            }));
 
-        let mut unknown: Vec<&String> = all_names.difference(&all_bindings).collect();
-        unknown.sort();
-        issues.extend(unknown.into_iter().map(|name| ExportIssue {
-            module: module.name.clone(),
-            path: module.path.clone(),
-            name: name.clone(),
-            kind: ExportIssueKind::Unknown,
-            lineno,
-        }));
+            let mut private: Vec<&String> = all_names
+                .intersection(&all_bindings)
+                .filter(|name| is_private(name))
+                .collect();
+            private.sort();
+            module_issues.extend(private.into_iter().map(|name| ExportIssue {
+                module: module.name.clone(),
+                path: module.path.clone(),
+                name: name.clone(),
+                kind: ExportIssueKind::Private,
+                lineno,
+            }));
 
-        let mut private: Vec<&String> = all_names
-            .intersection(&all_bindings)
-            .filter(|name| is_private(name))
-            .collect();
-        private.sort();
-        issues.extend(private.into_iter().map(|name| ExportIssue {
-            module: module.name.clone(),
-            path: module.path.clone(),
-            name: name.clone(),
-            kind: ExportIssueKind::Private,
-            lineno,
-        }));
+            let mut missing: Vec<&String> = public_bindings.difference(&all_names).collect();
+            missing.sort();
+            module_issues.extend(missing.into_iter().map(|name| ExportIssue {
+                module: module.name.clone(),
+                path: module.path.clone(),
+                name: name.clone(),
+                kind: ExportIssueKind::Missing,
+                lineno,
+            }));
 
-        let mut missing: Vec<&String> = public_bindings.difference(&all_names).collect();
-        missing.sort();
-        issues.extend(missing.into_iter().map(|name| ExportIssue {
-            module: module.name.clone(),
-            path: module.path.clone(),
-            name: name.clone(),
-            kind: ExportIssueKind::Missing,
-            lineno,
-        }));
-    }
+            module_issues
+        })
+        .collect();
 
     issues.sort_by(|a, b| {
         (

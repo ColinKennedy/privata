@@ -14,9 +14,7 @@ use crate::models::{
     ExportIssue, Method, Module, ModuleCollision, PrivateModuleImport, PrivateSymbolImport, Symbol,
     UnparsableModule,
 };
-use crate::modules::{
-    collect_module_collisions, collect_modules_with_errors, collect_test_consumers,
-};
+use crate::modules::{collect_modules_collisions_and_errors, collect_test_consumers};
 use crate::source_roots::{all_search_roots, is_test_source_root, source_roots};
 
 const METHOD_LIST_INDENT: &str = "      ";
@@ -200,7 +198,8 @@ fn collect_privacy_findings(project_root: &Path, include_methods: bool) -> Priva
         dunce::canonicalize(project_root).unwrap_or_else(|_| project_root.to_path_buf());
     let report_roots = source_roots(&project_root);
     let roots = all_search_roots(&project_root);
-    let (modules, unparsable_modules) = collect_modules_with_errors(&roots);
+    let (modules, unparsable_modules, module_collisions) =
+        collect_modules_collisions_and_errors(&roots);
     let (local_test_roots, external_test_roots) = split_test_source_roots(&report_roots, &roots);
     let production_roots: Vec<PathBuf> = roots
         .iter()
@@ -263,7 +262,7 @@ fn collect_privacy_findings(project_root: &Path, include_methods: bool) -> Priva
         private_module_imports: collect_private_module_imports(&modules),
         private_symbol_imports: collect_private_symbol_imports(&modules),
         export_issues: collect_export_issues(&modules),
-        module_collisions: collect_module_collisions(&roots),
+        module_collisions,
     };
     scope_findings_to_project(findings, &report_roots)
 }

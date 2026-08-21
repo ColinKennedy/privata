@@ -3,6 +3,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
+use rayon::prelude::*;
 use ruff_python_ast::{Expr, ModModule, Stmt, StmtClassDef, StmtFunctionDef};
 use ruff_source_file::LineIndex;
 
@@ -91,7 +92,188 @@ pub fn collect_modules(source_roots: &[PathBuf]) -> HashMap<String, Module> {
     collect_modules_with_errors(source_roots).0
 }
 
+/// Return every production `.py` file directly under `source_root`, in the
+/// same sorted, filtered order `collect_modules_with_errors` and
+/// `collect_module_collisions` have always walked.
+fn production_files(source_root: &Path) -> Vec<PathBuf> {
+    walk_python_files(source_root)
+        .into_iter()
+        .filter(|py_file| !should_skip_source_file(py_file, source_root))
+        .collect()
+}
+
+/// The outcome of parsing a single production `.py` file.
+enum ParsedFile {
+    Module(String, Module),
+    Unparsable(UnparsableModule),
+}
+
+/// Read and parse one production `.py` file into a [`Module`] or a failure.
+///
+/// Returns `None` when the file's path does not resolve to a module name
+/// (mirrors the `continue` in the original sequential scan).
+fn parse_module_file(py_file: PathBuf, source_root: &Path) -> Option<ParsedFile> {
+    let mod_name = module_name_from_path(&py_file, source_root)?;
+
+    let source = std::fs::read_to_string(&py_file)
+        .unwrap_or_else(|err| panic!("failed to read {}: {err}", py_file.display()));
+
+    match ruff_python_parser::parse_module(&source) {
+        Err(error) => {
+            let line_index = LineIndex::from_source_text(&source);
+            Some(ParsedFile::Unparsable(UnparsableModule {
+                module: mod_name,
+                path: py_file,
+                lineno: lineno_at(&line_index, error.location.start()),
+                message: error.error.to_string(),
+            }))
+        }
+        Ok(parsed) => {
+            let tree = parsed.into_syntax();
+            let line_index = LineIndex::from_source_text(&source);
+            let explicit_exports = extract_all(&tree);
+            let framework_related_names = collect_framework_related_names(&tree.body);
+            let mut pydantic_model_names: HashSet<String> = HashSet::new();
+            let file_ignored_lines = ignored_lines(&source);
+            let is_package_init =
+                py_file.file_name().and_then(|n| n.to_str()) == Some("__init__.py");
+
+            let mut symbols = Vec::new();
+            let mut private_symbols = Vec::new();
+
+            for node in &tree.body {
+                match node {
+                    Stmt::FunctionDef(f) => {
+                        if is_framework_callback(f) || is_pytest_fixture(f) {
+                            continue;
+                        }
+                        maybe_add(
+                            &mut symbols,
+                            &mut private_symbols,
+                            &mod_name,
+                            &py_file,
+                            SymbolCandidate {
+                                name: f.name.id.to_string(),
+                                kind: SymbolKind::Function,
+                                lineno: lineno_at(&line_index, f.name.range.start()),
+                            },
+                            explicit_exports.as_ref(),
+                            &framework_related_names,
+                            &file_ignored_lines,
+                        );
+                    }
+                    Stmt::ClassDef(c) => {
+                        if is_pydantic_model(c, &pydantic_model_names) {
+                            pydantic_model_names.insert(c.name.id.to_string());
+                            continue;
+                        }
+                        maybe_add(
+                            &mut symbols,
+                            &mut private_symbols,
+                            &mod_name,
+                            &py_file,
+                            SymbolCandidate {
+                                name: c.name.id.to_string(),
+                                kind: SymbolKind::Class,
+                                lineno: lineno_at(&line_index, c.name.range.start()),
+                            },
+                            explicit_exports.as_ref(),
+                            &framework_related_names,
+                            &file_ignored_lines,
+                        );
+                    }
+                    Stmt::Assign(a) => {
+                        if is_framework_constructor_call(&a.value) {
+                            continue;
+                        }
+                        for target in &a.targets {
+                            for name in names_from_target(target) {
+                                maybe_add(
+                                    &mut symbols,
+                                    &mut private_symbols,
+                                    &mod_name,
+                                    &py_file,
+                                    SymbolCandidate {
+                                        name,
+                                        kind: SymbolKind::Variable,
+                                        lineno: lineno_at(&line_index, a.range.start()),
+                                    },
+                                    explicit_exports.as_ref(),
+                                    &framework_related_names,
+                                    &file_ignored_lines,
+                                );
+                            }
+                        }
+                    }
+                    Stmt::AnnAssign(a) => {
+                        if let Some(value) = &a.value {
+                            if is_framework_constructor_call(value) {
+                                continue;
+                            }
+                        }
+                        for name in names_from_target(&a.target) {
+                            maybe_add(
+                                &mut symbols,
+                                &mut private_symbols,
+                                &mod_name,
+                                &py_file,
+                                SymbolCandidate {
+                                    name,
+                                    kind: SymbolKind::Variable,
+                                    lineno: lineno_at(&line_index, a.range.start()),
+                                },
+                                explicit_exports.as_ref(),
+                                &framework_related_names,
+                                &file_ignored_lines,
+                            );
+                        }
+                    }
+                    Stmt::TypeAlias(t) => {
+                        for name in names_from_target(&t.name) {
+                            maybe_add(
+                                &mut symbols,
+                                &mut private_symbols,
+                                &mod_name,
+                                &py_file,
+                                SymbolCandidate {
+                                    name,
+                                    kind: SymbolKind::Variable,
+                                    lineno: lineno_at(&line_index, t.range.start()),
+                                },
+                                explicit_exports.as_ref(),
+                                &framework_related_names,
+                                &file_ignored_lines,
+                            );
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            let mut module = Module::new(
+                mod_name.clone(),
+                py_file,
+                package_parts(&mod_name, is_package_init),
+            );
+            module.symbols = symbols;
+            module.private_symbols = private_symbols;
+            module.exports = explicit_exports.unwrap_or_default();
+            module.ignored_lines = file_ignored_lines;
+            module.tree = Some(tree);
+            module.line_index = Some(line_index);
+
+            Some(ParsedFile::Module(mod_name, module))
+        }
+    }
+}
+
 /// Parse every production `.py`, returning both the modules and the failures.
+///
+/// Files within a source root are read and parsed in parallel — parsing is
+/// the dominant cost of a scan and is embarrassingly parallel across files —
+/// then folded into the result maps in the same sorted, first-file-wins
+/// order `walk_python_files` has always produced, so output stays
+/// deterministic regardless of which thread finished first.
 pub fn collect_modules_with_errors(
     source_roots: &[PathBuf],
 ) -> (HashMap<String, Module>, Vec<UnparsableModule>) {
@@ -99,164 +281,20 @@ pub fn collect_modules_with_errors(
     let mut unparsable: Vec<UnparsableModule> = Vec::new();
 
     for source_root in source_roots {
-        for py_file in walk_python_files(source_root) {
-            if should_skip_source_file(&py_file, source_root) {
-                continue;
-            }
-            let Some(mod_name) = module_name_from_path(&py_file, source_root) else {
-                continue;
-            };
+        let files = production_files(source_root);
 
-            let source = std::fs::read_to_string(&py_file)
-                .unwrap_or_else(|err| panic!("failed to read {}: {err}", py_file.display()));
+        let parsed: Vec<ParsedFile> = files
+            .into_par_iter()
+            .filter_map(|py_file| parse_module_file(py_file, source_root))
+            .collect();
 
-            match ruff_python_parser::parse_module(&source) {
-                Err(error) => {
-                    let line_index = LineIndex::from_source_text(&source);
-                    unparsable.push(UnparsableModule {
-                        module: mod_name,
-                        path: py_file,
-                        lineno: lineno_at(&line_index, error.location.start()),
-                        message: error.error.to_string(),
-                    });
-                }
-                Ok(parsed) => {
-                    let tree = parsed.into_syntax();
-                    let line_index = LineIndex::from_source_text(&source);
-                    let explicit_exports = extract_all(&tree);
-                    let framework_related_names = collect_framework_related_names(&tree.body);
-                    let mut pydantic_model_names: HashSet<String> = HashSet::new();
-                    let file_ignored_lines = ignored_lines(&source);
-                    let is_package_init =
-                        py_file.file_name().and_then(|n| n.to_str()) == Some("__init__.py");
-
-                    let mut symbols = Vec::new();
-                    let mut private_symbols = Vec::new();
-
-                    for node in &tree.body {
-                        match node {
-                            Stmt::FunctionDef(f) => {
-                                if is_framework_callback(f) || is_pytest_fixture(f) {
-                                    continue;
-                                }
-                                maybe_add(
-                                    &mut symbols,
-                                    &mut private_symbols,
-                                    &mod_name,
-                                    &py_file,
-                                    SymbolCandidate {
-                                        name: f.name.id.to_string(),
-                                        kind: SymbolKind::Function,
-                                        lineno: lineno_at(&line_index, f.name.range.start()),
-                                    },
-                                    explicit_exports.as_ref(),
-                                    &framework_related_names,
-                                    &file_ignored_lines,
-                                );
-                            }
-                            Stmt::ClassDef(c) => {
-                                if is_pydantic_model(c, &pydantic_model_names) {
-                                    pydantic_model_names.insert(c.name.id.to_string());
-                                    continue;
-                                }
-                                maybe_add(
-                                    &mut symbols,
-                                    &mut private_symbols,
-                                    &mod_name,
-                                    &py_file,
-                                    SymbolCandidate {
-                                        name: c.name.id.to_string(),
-                                        kind: SymbolKind::Class,
-                                        lineno: lineno_at(&line_index, c.name.range.start()),
-                                    },
-                                    explicit_exports.as_ref(),
-                                    &framework_related_names,
-                                    &file_ignored_lines,
-                                );
-                            }
-                            Stmt::Assign(a) => {
-                                if is_framework_constructor_call(&a.value) {
-                                    continue;
-                                }
-                                for target in &a.targets {
-                                    for name in names_from_target(target) {
-                                        maybe_add(
-                                            &mut symbols,
-                                            &mut private_symbols,
-                                            &mod_name,
-                                            &py_file,
-                                            SymbolCandidate {
-                                                name,
-                                                kind: SymbolKind::Variable,
-                                                lineno: lineno_at(&line_index, a.range.start()),
-                                            },
-                                            explicit_exports.as_ref(),
-                                            &framework_related_names,
-                                            &file_ignored_lines,
-                                        );
-                                    }
-                                }
-                            }
-                            Stmt::AnnAssign(a) => {
-                                if let Some(value) = &a.value {
-                                    if is_framework_constructor_call(value) {
-                                        continue;
-                                    }
-                                }
-                                for name in names_from_target(&a.target) {
-                                    maybe_add(
-                                        &mut symbols,
-                                        &mut private_symbols,
-                                        &mod_name,
-                                        &py_file,
-                                        SymbolCandidate {
-                                            name,
-                                            kind: SymbolKind::Variable,
-                                            lineno: lineno_at(&line_index, a.range.start()),
-                                        },
-                                        explicit_exports.as_ref(),
-                                        &framework_related_names,
-                                        &file_ignored_lines,
-                                    );
-                                }
-                            }
-                            Stmt::TypeAlias(t) => {
-                                for name in names_from_target(&t.name) {
-                                    maybe_add(
-                                        &mut symbols,
-                                        &mut private_symbols,
-                                        &mod_name,
-                                        &py_file,
-                                        SymbolCandidate {
-                                            name,
-                                            kind: SymbolKind::Variable,
-                                            lineno: lineno_at(&line_index, t.range.start()),
-                                        },
-                                        explicit_exports.as_ref(),
-                                        &framework_related_names,
-                                        &file_ignored_lines,
-                                    );
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-
-                    let mut module = Module::new(
-                        mod_name.clone(),
-                        py_file,
-                        package_parts(&mod_name, is_package_init),
-                    );
-                    module.symbols = symbols;
-                    module.private_symbols = private_symbols;
-                    module.exports = explicit_exports.unwrap_or_default();
-                    module.ignored_lines = file_ignored_lines;
-                    module.tree = Some(tree);
-                    module.line_index = Some(line_index);
-
-                    // A later source root must not evict an already-collected module: the
-                    // collision is real (and collect_module_collisions reports it), but
-                    // dropping the first file found would silently stop scanning it.
+        for outcome in parsed {
+            match outcome {
+                ParsedFile::Unparsable(u) => unparsable.push(u),
+                // A later source root must not evict an already-collected module: the
+                // collision is real (and collect_module_collisions reports it), but
+                // dropping the first file found would silently stop scanning it.
+                ParsedFile::Module(mod_name, module) => {
                     modules.entry(mod_name).or_insert(module);
                 }
             }
@@ -275,17 +313,32 @@ pub fn collect_modules_with_errors(
 pub fn collect_module_collisions(source_roots: &[PathBuf]) -> Vec<ModuleCollision> {
     let mut paths_by_name: HashMap<String, HashSet<PathBuf>> = HashMap::new();
     for source_root in source_roots {
-        for py_file in walk_python_files(source_root) {
-            if should_skip_source_file(&py_file, source_root) {
-                continue;
-            }
-            let Some(mod_name) = module_name_from_path(&py_file, source_root) else {
-                continue;
-            };
-            paths_by_name.entry(mod_name).or_default().insert(py_file);
-        }
+        group_paths_by_module_name(
+            &production_files(source_root),
+            source_root,
+            &mut paths_by_name,
+        );
     }
+    finish_collisions(paths_by_name)
+}
 
+fn group_paths_by_module_name(
+    files: &[PathBuf],
+    source_root: &Path,
+    paths_by_name: &mut HashMap<String, HashSet<PathBuf>>,
+) {
+    for py_file in files {
+        let Some(mod_name) = module_name_from_path(py_file, source_root) else {
+            continue;
+        };
+        paths_by_name
+            .entry(mod_name)
+            .or_default()
+            .insert(py_file.clone());
+    }
+}
+
+fn finish_collisions(paths_by_name: HashMap<String, HashSet<PathBuf>>) -> Vec<ModuleCollision> {
     let mut collisions: Vec<ModuleCollision> = paths_by_name
         .into_iter()
         .filter(|(_, paths)| paths.len() > 1)
@@ -297,6 +350,45 @@ pub fn collect_module_collisions(source_roots: &[PathBuf]) -> Vec<ModuleCollisio
         .collect();
     collisions.sort_by(|a, b| a.module.cmp(&b.module));
     collisions
+}
+
+/// Parse every production `.py`, returning modules, failures, and module-name
+/// collisions in a single walk per source root.
+///
+/// This is the fused form of calling [`collect_modules_with_errors`] and
+/// [`collect_module_collisions`] separately over the same `source_roots`: both
+/// would otherwise re-walk and re-filter an identical file list.
+pub fn collect_modules_collisions_and_errors(
+    source_roots: &[PathBuf],
+) -> (
+    HashMap<String, Module>,
+    Vec<UnparsableModule>,
+    Vec<ModuleCollision>,
+) {
+    let mut modules: HashMap<String, Module> = HashMap::new();
+    let mut unparsable: Vec<UnparsableModule> = Vec::new();
+    let mut paths_by_name: HashMap<String, HashSet<PathBuf>> = HashMap::new();
+
+    for source_root in source_roots {
+        let files = production_files(source_root);
+        group_paths_by_module_name(&files, source_root, &mut paths_by_name);
+
+        let parsed: Vec<ParsedFile> = files
+            .into_par_iter()
+            .filter_map(|py_file| parse_module_file(py_file, source_root))
+            .collect();
+
+        for outcome in parsed {
+            match outcome {
+                ParsedFile::Unparsable(u) => unparsable.push(u),
+                ParsedFile::Module(mod_name, module) => {
+                    modules.entry(mod_name).or_insert(module);
+                }
+            }
+        }
+    }
+
+    (modules, unparsable, finish_collisions(paths_by_name))
 }
 
 /// Parse test files for use as import consumers only.
@@ -312,31 +404,45 @@ pub fn collect_test_consumers(
     nested_test_roots: &[PathBuf],
 ) -> HashMap<String, Module> {
     let mut consumers: HashMap<String, Module> = HashMap::new();
+
     for source_root in test_source_roots {
-        for py_file in walk_python_files(source_root) {
-            if !is_test_module_filename(py_file.file_name().and_then(|n| n.to_str()).unwrap_or(""))
-            {
-                continue;
-            }
-            if is_in_ignored_directory(&py_file, source_root) {
-                continue;
-            }
-            add_test_consumer(&mut consumers, &py_file, source_root);
-        }
+        let files: Vec<PathBuf> = walk_python_files(source_root)
+            .into_iter()
+            .filter(|py_file| {
+                is_test_module_filename(py_file.file_name().and_then(|n| n.to_str()).unwrap_or(""))
+                    && !is_in_ignored_directory(py_file, source_root)
+            })
+            .collect();
+        extend_test_consumers(&mut consumers, files, source_root);
     }
     for source_root in nested_test_roots {
-        for py_file in walk_python_files(source_root) {
-            if !is_nested_test_file(&py_file, source_root) {
-                continue;
-            }
-            add_test_consumer(&mut consumers, &py_file, source_root);
-        }
+        let files: Vec<PathBuf> = walk_python_files(source_root)
+            .into_iter()
+            .filter(|py_file| is_nested_test_file(py_file, source_root))
+            .collect();
+        extend_test_consumers(&mut consumers, files, source_root);
     }
     consumers
 }
 
-fn add_test_consumer(consumers: &mut HashMap<String, Module>, py_file: &Path, source_root: &Path) {
-    let rel = py_file.strip_prefix(source_root).unwrap_or(py_file);
+/// Parse `files` (already filtered to test-shaped consumers) in parallel and
+/// insert the results, in their original walked order, into `consumers`.
+fn extend_test_consumers(
+    consumers: &mut HashMap<String, Module>,
+    files: Vec<PathBuf>,
+    source_root: &Path,
+) {
+    let parsed: Vec<(String, Module)> = files
+        .into_par_iter()
+        .filter_map(|py_file| build_test_consumer(py_file, source_root))
+        .collect();
+    for (mod_name, module) in parsed {
+        consumers.insert(mod_name, module);
+    }
+}
+
+fn build_test_consumer(py_file: PathBuf, source_root: &Path) -> Option<(String, Module)> {
+    let rel = py_file.strip_prefix(source_root).unwrap_or(&py_file);
     let mut parts: Vec<String> = rel
         .iter()
         .filter_map(|p| p.to_str())
@@ -349,22 +455,14 @@ fn add_test_consumer(consumers: &mut HashMap<String, Module>, py_file: &Path, so
     }
     let mod_name = parts.join(NAMESPACE_SEPARATOR);
 
-    let Ok(source) = std::fs::read_to_string(py_file) else {
-        return;
-    };
-    let Ok(parsed) = ruff_python_parser::parse_module(&source) else {
-        return;
-    };
+    let source = std::fs::read_to_string(&py_file).ok()?;
+    let parsed = ruff_python_parser::parse_module(&source).ok()?;
     let tree = parsed.into_syntax();
     let line_index = LineIndex::from_source_text(&source);
-    let mut module = Module::new(
-        mod_name.clone(),
-        py_file.to_path_buf(),
-        package_parts(&mod_name, false),
-    );
+    let mut module = Module::new(mod_name.clone(), py_file, package_parts(&mod_name, false));
     module.tree = Some(tree);
     module.line_index = Some(line_index);
-    consumers.insert(mod_name, module);
+    Some((mod_name, module))
 }
 
 fn extract_all(tree: &ModModule) -> Option<HashSet<String>> {
