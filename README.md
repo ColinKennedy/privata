@@ -68,6 +68,15 @@ privata .
 Privata uses `tach.toml` `source_roots` when present.
 Otherwise it prefers `src/` when that directory exists, and falls back to scanning the project root while ignoring tests, virtualenvs, build output, docs output, and hidden tooling directories.
 
+To adopt Privata incrementally on a large codebase, add `tach.toml` `privata_search_paths` alongside `source_roots`: it widens what gets *searched* for cross-references without widening what gets *reported*.
+
+```toml
+source_roots = ["python/some/subfolder"]
+privata_search_paths = ["python"]
+```
+
+This searches all of `python/` so usage elsewhere in the tree is recognized, but only reports findings inside `python/some/subfolder`.
+
 Use Privata as a pre-commit hook in another repository:
 
 ```yaml

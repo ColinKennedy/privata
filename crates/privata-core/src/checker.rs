@@ -17,7 +17,7 @@ use crate::models::{
 use crate::modules::{
     collect_module_collisions, collect_modules_with_errors, collect_test_consumers,
 };
-use crate::source_roots::{is_test_source_root, source_roots};
+use crate::source_roots::{all_search_roots, is_test_source_root, source_roots};
 
 const METHOD_LIST_INDENT: &str = "      ";
 // Keeps the indented method list inside the project's 100-column limit.
@@ -111,14 +111,21 @@ fn test_helper_method_references(
 }
 
 /// Split test roots into local helper roots and external consumer roots.
-fn split_test_source_roots(project_root: &Path, roots: &[PathBuf]) -> (Vec<PathBuf>, Vec<PathBuf>) {
+///
+/// A test root counts as local when it sits under a reported `source_roots`
+/// entry; a test root reached only via `privata_search_paths` is treated as
+/// external reference context, same as any other search-only root.
+fn split_test_source_roots(
+    report_roots: &[PathBuf],
+    roots: &[PathBuf],
+) -> (Vec<PathBuf>, Vec<PathBuf>) {
     let mut local = Vec::new();
     let mut external = Vec::new();
     for root in roots {
         if !is_test_source_root(root) {
             continue;
         }
-        if root.starts_with(project_root) {
+        if report_roots.iter().any(|r| root.starts_with(r)) {
             local.push(root.clone());
         } else {
             external.push(root.clone());
@@ -158,18 +165,18 @@ fn standalone_test_method_references(
     references
 }
 
-/// Drop findings that live outside `project_root`.
+/// Drop findings that don't live under a reported `source_roots` entry.
 ///
-/// Out-of-project `source_roots` are reference context: they exist so a
-/// symbol defined here can be seen as used by a sibling project. Defects
-/// *inside* those siblings belong to the siblings' own runs, not to this
-/// one. Module collisions are kept whole, since a collision is inherently a
-/// statement about two roots.
+/// `privata_search_paths` widen what gets *searched* (so a symbol defined in
+/// a reported root can be seen as used from a wider or sibling tree) without
+/// widening what gets *reported*: defects in a search-only path belong to
+/// whatever project owns that path, not to this run. Module collisions are
+/// kept whole, since a collision is inherently a statement about two roots.
 fn scope_findings_to_project(
     mut findings: PrivacyFindings,
-    project_root: &Path,
+    report_roots: &[PathBuf],
 ) -> PrivacyFindings {
-    let owned = |path: &Path| path.starts_with(project_root);
+    let owned = |path: &Path| report_roots.iter().any(|r| path.starts_with(r));
     findings.unparsable_modules.retain(|m| owned(&m.path));
     findings.candidates.retain(|s| owned(&s.path));
     findings.method_candidates.retain(|m| owned(&m.path));
@@ -191,9 +198,10 @@ fn scope_findings_to_project(
 fn collect_privacy_findings(project_root: &Path, include_methods: bool) -> PrivacyFindings {
     let project_root =
         dunce::canonicalize(project_root).unwrap_or_else(|_| project_root.to_path_buf());
-    let roots = source_roots(&project_root);
+    let report_roots = source_roots(&project_root);
+    let roots = all_search_roots(&project_root);
     let (modules, unparsable_modules) = collect_modules_with_errors(&roots);
-    let (local_test_roots, external_test_roots) = split_test_source_roots(&project_root, &roots);
+    let (local_test_roots, external_test_roots) = split_test_source_roots(&report_roots, &roots);
     let production_roots: Vec<PathBuf> = roots
         .iter()
         .filter(|r| !is_test_source_root(r))
@@ -257,7 +265,7 @@ fn collect_privacy_findings(project_root: &Path, include_methods: bool) -> Priva
         export_issues: collect_export_issues(&modules),
         module_collisions: collect_module_collisions(&roots),
     };
-    scope_findings_to_project(findings, &project_root)
+    scope_findings_to_project(findings, &report_roots)
 }
 
 /// Find production source files that could not be parsed.
@@ -702,7 +710,34 @@ mod tests {
     }
 
     #[test]
-    fn unparsable_modules_exclude_out_of_project_source_roots() {
+    fn unparsable_modules_exclude_privata_search_paths() {
+        let tmp = TempDir::new().unwrap();
+        write(tmp.path(), "core/src/broken.py", "def oops(:\n    pass\n");
+        write(
+            tmp.path(),
+            "sibling/sibling_broken.py",
+            "def oops(:\n    pass\n",
+        );
+        write(
+            tmp.path(),
+            "core/tach.toml",
+            "source_roots = [\"src\"]\nprivata_search_paths = [\"../sibling\"]\n",
+        );
+
+        let (text, code) = check_project(&tmp.path().join("core"), false);
+        assert_eq!(code, 1);
+        assert!(text.contains("could not be parsed"));
+        assert!(text.contains("src/broken.py"));
+        assert!(!text.contains("sibling_broken.py"));
+    }
+
+    #[test]
+    fn source_roots_without_privata_search_paths_are_fully_reported_even_outside_project() {
+        // The old behaviour silently exempted out-of-project `source_roots`
+        // from reporting; that exemption is gone. Anything explicitly listed
+        // in `source_roots` is reported regardless of where it lives —
+        // `privata_search_paths` is now the only way to search without
+        // reporting.
         let tmp = TempDir::new().unwrap();
         write(tmp.path(), "core/src/broken.py", "def oops(:\n    pass\n");
         write(
@@ -716,10 +751,46 @@ mod tests {
             "source_roots = [\"src\", \"../sibling\"]\n",
         );
 
-        let (text, code) = check_project(&tmp.path().join("core"), false);
-        assert_eq!(code, 1);
-        assert!(text.contains("could not be parsed"));
+        let (text, _) = check_project(&tmp.path().join("core"), false);
         assert!(text.contains("src/broken.py"));
-        assert!(!text.contains("sibling_broken.py"));
+        assert!(text.contains("sibling_broken.py"));
+    }
+
+    #[test]
+    fn privata_search_paths_widen_search_without_widening_reporting() {
+        // source_roots covers only python/pkg (the subfolder being
+        // incrementally onboarded); privata_search_paths covers all of
+        // python/ so a symbol used elsewhere in the tree is still seen as
+        // used, but issues elsewhere in python/ (outside pkg/) are not
+        // reported.
+        let tmp = TempDir::new().unwrap();
+        write(
+            tmp.path(),
+            "python/pkg/mod.py",
+            "def used_elsewhere() -> int:\n    return 1\n\n\ndef unused() -> int:\n    return 2\n",
+        );
+        write(
+            tmp.path(),
+            "python/other/consumer.py",
+            "def stray_unused() -> int:\n    return 1\n\n\nfrom pkg.mod import used_elsewhere\n\nused_elsewhere()\n",
+        );
+        write(
+            tmp.path(),
+            "tach.toml",
+            "source_roots = [\"python/pkg\"]\nprivata_search_paths = [\"python\"]\n",
+        );
+
+        let (text, code) = check_project(tmp.path(), false);
+        assert_eq!(code, 1);
+        assert!(
+            !text.contains("used_elsewhere"),
+            "used from python/other, so not a candidate despite living in the narrower source root"
+        );
+        assert!(text.contains("pkg/mod.py"));
+        assert!(text.contains('`') && text.contains("unused"));
+        assert!(
+            !text.contains("consumer.py"),
+            "issues outside source_roots must not be reported even though they were searched"
+        );
     }
 }

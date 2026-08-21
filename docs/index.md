@@ -35,6 +35,7 @@ Continue with [Getting Started](getting-started.md), or see the [usage guide](us
 - Honors package `__init__.py` re-exports and literal `__all__` declarations.
 - Honors `pyproject.toml` console entry points, Uvicorn shell entry points, and Tach interfaces.
 - Uses Tach `source_roots`, `src/`, or the project root depending on the repository layout.
+- Supports `privata_search_paths` to search a wider tree for cross-references without reporting on it, for incremental adoption.
 - Uses only the Python standard library at runtime.
 
 ## Example

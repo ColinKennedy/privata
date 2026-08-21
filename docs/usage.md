@@ -13,6 +13,17 @@ privata <project-root>
 The command scans production Python source roots under `<project-root>`.
 It uses `tach.toml` `source_roots` when present, otherwise prefers `src/`, otherwise scans the project root while ignoring tests, virtualenvs, build output, docs output, and hidden tooling directories.
 
+`source_roots` is both what gets searched and what gets reported. To search
+a wider tree (so cross-references outside `source_roots` still count as
+usage) without reporting on it, add `tach.toml` `privata_search_paths`:
+
+```toml
+source_roots = ["python/some/subfolder"]
+privata_search_paths = ["python"]
+```
+
+See [Adopting Privata Incrementally](getting-started.md#adopting-privata-incrementally).
+
 ## Pre-Commit
 
 Add Privata to another repository's `.pre-commit-config.yaml`:

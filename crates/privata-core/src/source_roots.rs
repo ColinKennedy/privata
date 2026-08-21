@@ -39,7 +39,7 @@ fn src_dir(project_root: &Path) -> Option<PathBuf> {
     src.is_dir().then_some(src)
 }
 
-fn load_tach_source_roots(project_root: &Path) -> Vec<PathBuf> {
+fn read_tach_toml_paths(project_root: &Path, key: &str) -> Vec<PathBuf> {
     let tach_path = project_root.join("tach.toml");
     let Ok(text) = std::fs::read_to_string(&tach_path) else {
         return Vec::new();
@@ -47,12 +47,12 @@ fn load_tach_source_roots(project_root: &Path) -> Vec<PathBuf> {
     let Ok(data) = text.parse::<toml::Table>() else {
         return Vec::new();
     };
-    let Some(source_roots) = data.get("source_roots").and_then(toml::Value::as_array) else {
+    let Some(entries) = data.get(key).and_then(toml::Value::as_array) else {
         return Vec::new();
     };
 
     let mut roots = Vec::new();
-    for entry in source_roots {
+    for entry in entries {
         let Some(rel) = entry.as_str() else { continue };
         let root = project_root.join(rel);
         let Ok(root) = dunce::canonicalize(&root) else {
@@ -65,7 +65,15 @@ fn load_tach_source_roots(project_root: &Path) -> Vec<PathBuf> {
     roots
 }
 
+fn load_tach_source_roots(project_root: &Path) -> Vec<PathBuf> {
+    read_tach_toml_paths(project_root, "source_roots")
+}
+
 /// Resolve source roots for a project.
+///
+/// These are the roots findings are reported for. Use
+/// [`privata_search_paths`] to widen what gets *searched* (e.g. for
+/// cross-references) without widening what gets *reported*.
 pub fn source_roots(project_root: &Path) -> Vec<PathBuf> {
     let tach_roots = load_tach_source_roots(project_root);
     if !tach_roots.is_empty() {
@@ -77,6 +85,45 @@ pub fn source_roots(project_root: &Path) -> Vec<PathBuf> {
     }
 
     vec![project_root.to_path_buf()]
+}
+
+/// Resolve `tach.toml` `privata_search_paths`: directories that are searched
+/// for cross-references (imports, usages) but never themselves reported on.
+///
+/// A path may sit anywhere — inside or outside the project — and may nest
+/// around a `source_roots` entry, e.g. `source_roots = ["python/pkg"]` with
+/// `privata_search_paths = ["python"]` searches all of `python/` so
+/// cross-package usage resolves correctly, while only reporting issues found
+/// under `python/pkg`.
+pub fn privata_search_paths(project_root: &Path) -> Vec<PathBuf> {
+    read_tach_toml_paths(project_root, "privata_search_paths")
+}
+
+/// Remove any root that is nested inside another root in the list, keeping
+/// only the outermost roots.
+///
+/// A nested root would otherwise be walked twice — once under its own name
+/// and once as part of its ancestor's walk — producing two different (and
+/// differently-qualified) module identities for the same file.
+fn dedup_nested_roots(mut roots: Vec<PathBuf>) -> Vec<PathBuf> {
+    roots.sort();
+    roots.dedup();
+    let mut kept: Vec<PathBuf> = Vec::new();
+    for root in roots {
+        if !kept.iter().any(|existing| root.starts_with(existing)) {
+            kept.push(root);
+        }
+    }
+    kept
+}
+
+/// Resolve every root that should be searched: `source_roots` plus
+/// `privata_search_paths`, with nested roots collapsed to their outermost
+/// ancestor.
+pub fn all_search_roots(project_root: &Path) -> Vec<PathBuf> {
+    let mut roots = source_roots(project_root);
+    roots.extend(privata_search_paths(project_root));
+    dedup_nested_roots(roots)
 }
 
 /// Return whether a Python file should be ignored as non-production source.
@@ -224,6 +271,65 @@ mod tests {
         write(tmp.path(), "tach.toml", "source_roots = [\"missing\"]\n");
         let roots = source_roots(tmp.path());
         assert_eq!(roots, vec![tmp.path().to_path_buf()]);
+    }
+
+    #[test]
+    fn privata_search_paths_are_empty_by_default() {
+        let tmp = TempDir::new().unwrap();
+        assert!(privata_search_paths(tmp.path()).is_empty());
+    }
+
+    #[test]
+    fn privata_search_paths_are_read_from_tach_toml() {
+        let tmp = TempDir::new().unwrap();
+        fs::create_dir_all(tmp.path().join("python")).unwrap();
+        write(
+            tmp.path(),
+            "tach.toml",
+            "source_roots = [\"python/pkg\"]\nprivata_search_paths = [\"python\"]\n",
+        );
+        fs::create_dir_all(tmp.path().join("python/pkg")).unwrap();
+        let paths = privata_search_paths(tmp.path());
+        assert_eq!(
+            paths,
+            vec![dunce::canonicalize(tmp.path().join("python")).unwrap()]
+        );
+    }
+
+    #[test]
+    fn all_search_roots_collapses_a_source_root_nested_inside_a_search_path() {
+        let tmp = TempDir::new().unwrap();
+        fs::create_dir_all(tmp.path().join("python/pkg")).unwrap();
+        write(
+            tmp.path(),
+            "tach.toml",
+            "source_roots = [\"python/pkg\"]\nprivata_search_paths = [\"python\"]\n",
+        );
+        let roots = all_search_roots(tmp.path());
+        assert_eq!(
+            roots,
+            vec![dunce::canonicalize(tmp.path().join("python")).unwrap()]
+        );
+    }
+
+    #[test]
+    fn all_search_roots_keeps_disjoint_source_and_search_roots() {
+        let tmp = TempDir::new().unwrap();
+        fs::create_dir_all(tmp.path().join("src")).unwrap();
+        fs::create_dir_all(tmp.path().join("reference")).unwrap();
+        write(
+            tmp.path(),
+            "tach.toml",
+            "source_roots = [\"src\"]\nprivata_search_paths = [\"reference\"]\n",
+        );
+        let roots = all_search_roots(tmp.path());
+        assert_eq!(
+            roots,
+            vec![
+                dunce::canonicalize(tmp.path().join("reference")).unwrap(),
+                dunce::canonicalize(tmp.path().join("src")).unwrap(),
+            ]
+        );
     }
 
     #[test]

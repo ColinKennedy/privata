@@ -88,6 +88,24 @@ project/
         └── module.py
 ```
 
+## Adopting Privata Incrementally
+
+`source_roots` controls both what gets *searched* and what gets *reported*.
+To onboard a large codebase gradually, add `privata_search_paths` alongside
+`source_roots` in `tach.toml`: it widens the search without widening the
+report.
+
+```toml
+source_roots = ["python/some/subfolder"]
+privata_search_paths = ["python"]
+```
+
+This searches all of `python/` for cross-references — so a symbol defined
+in `python/some/subfolder` that's used elsewhere in `python/` is correctly
+recognized as used — but only reports findings inside
+`python/some/subfolder`. Expand `source_roots` over time as more of the
+codebase is ready to be checked.
+
 If `src/` is absent, Privata scans the project root and ignores tests, virtualenvs, build output, docs output, and hidden tooling directories.
 Tests can live anywhere.
 Imports from tests do not count when deciding whether a symbol should stay public.
