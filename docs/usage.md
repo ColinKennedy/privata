@@ -114,11 +114,11 @@ Privata skips:
 - classes with a base class other than `object`, since the base may define the method contract
 - classes that another class in the project subclasses, since a subclass may override the method and renaming the base method would strand that override under its old name
 - classes with class keywords such as `metaclass=`
-- classes with decorators other than `@dataclass` and `@final`
+- classes with decorators other than `@dataclass`, `@attrs.define` (or `@attr.define`), and `@final`
 - private classes, classes listed in `__all__`, classes re-exported by a package `__init__.py` or named in another module's `__all__`, and classes exposed through entry points or a Tach interface
 - classes nested inside functions or other classes
 - dunder methods and methods that are already private
-- methods carrying any decorator other than `@property`, `@staticmethod`, `@classmethod`, `@cached_property`, `@cache`, `@lru_cache`, and `@final`
+- methods carrying any decorator other than `@property`, `@staticmethod`, `@classmethod`, `@cached_property`, `@cache`, `@lru_cache`, `@final`, and an attrs field hook (`@some_field.default` / `@some_field.validator`, where `some_field` was assigned with `attrs.field(...)` in the same class)
 - methods that call the same method through `super()`, since cooperative mixins must preserve that name
 
 The decorator rule is what keeps route handlers, Pydantic validators, pytest fixtures, and Celery tasks out of the report: those methods are registered under their current name by a decorator.

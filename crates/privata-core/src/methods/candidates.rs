@@ -23,10 +23,20 @@ const SAFE_METHOD_DECORATORS: &[&str] = &[
     "typing_extensions.final",
 ];
 const SAFE_CLASS_DECORATORS: &[&str] = &[
+    "attr.define",
+    "attrs.define",
     "dataclasses.dataclass",
     "typing.final",
     "typing_extensions.final",
 ];
+// `attrs`/`attr` are two import names for the same package, so `field()` is
+// recognized under either spelling.
+const ATTRS_FIELD_CALLS: &[&str] = &["attr.field", "attrs.field"];
+// Decorators attrs attaches to a field's `_CountingAttr` object, e.g.
+// `@some_field.default` / `@some_field.validator`. These bind to the field by
+// object identity, not by the method's name, so renaming the method never
+// breaks them.
+const ATTRS_FIELD_HOOK_ATTRS: &[&str] = &["default", "validator"];
 const LOCAL_DECORATOR_PREFIX: &str = "<local>";
 // Builtins that reach an attribute by name, so a computed name hides the target.
 const DYNAMIC_LOOKUPS: &[&str] = &["delattr", "getattr", "hasattr", "setattr"];
@@ -223,6 +233,7 @@ fn class_method_candidates(
 ) -> Vec<Method> {
     let mut aliases = decorator_aliases.clone();
     let protected_methods = protected_method_nodes(&class_node.body);
+    let attrs_fields = attrs_field_names(&class_node.body, decorator_aliases);
     let public_methods = class_node
         .body
         .iter()
@@ -235,7 +246,7 @@ fn class_method_candidates(
             update_aliases(&mut aliases, node);
             continue;
         };
-        let checkable = is_checkable_method(node, f, &aliases);
+        let checkable = is_checkable_method(node, f, &aliases, &attrs_fields);
         aliases.insert(
             f.name.id.to_string(),
             format!("{LOCAL_DECORATOR_PREFIX}{NAMESPACE_SEPARATOR}{}", f.name.id),
@@ -429,10 +440,63 @@ fn is_string_literal(expr: &Expr) -> bool {
     matches!(expr, Expr::StringLiteral(_))
 }
 
+/// Return the names of attrs fields declared in a class body.
+///
+/// A field is any `name = field(...)` (or `name: T = field(...)`) assignment
+/// whose call resolves to `attrs.field`/`attr.field` under the module's
+/// import aliases. attrs binds `.default`/`.validator` hooks to the
+/// resulting `_CountingAttr` object rather than to the field's name, so a
+/// field can be recognized this way regardless of where in the class body it
+/// sits relative to the methods that decorate off of it.
+fn attrs_field_names(
+    class_body: &[Stmt],
+    decorator_aliases: &HashMap<String, String>,
+) -> HashSet<String> {
+    let mut fields = HashSet::new();
+    for node in class_body {
+        let (name, value) = match node {
+            Stmt::Assign(assign) => match assign.targets.as_slice() {
+                [Expr::Name(target)] => (target.id.as_str(), assign.value.as_ref()),
+                _ => continue,
+            },
+            Stmt::AnnAssign(ann) => match (&*ann.target, ann.value.as_deref()) {
+                (Expr::Name(target), Some(value)) => (target.id.as_str(), value),
+                _ => continue,
+            },
+            _ => continue,
+        };
+        if is_attrs_field_call(value, decorator_aliases) {
+            fields.insert(name.to_string());
+        }
+    }
+    fields
+}
+
+fn is_attrs_field_call(expr: &Expr, aliases: &HashMap<String, String>) -> bool {
+    let Expr::Call(call) = expr else {
+        return false;
+    };
+    resolved_name(&call.func, aliases)
+        .is_some_and(|name| ATTRS_FIELD_CALLS.contains(&name.as_str()))
+}
+
+/// Return whether a decorator is an attrs field hook (`@x.default`/`@x.validator`)
+/// bound to a field declared in the same class.
+fn is_attrs_field_hook_decorator(decorator: &Expr, attrs_fields: &HashSet<String>) -> bool {
+    let Expr::Attribute(attr) = decorator else {
+        return false;
+    };
+    if !ATTRS_FIELD_HOOK_ATTRS.contains(&attr.attr.id.as_str()) {
+        return false;
+    }
+    matches!(&*attr.value, Expr::Name(name) if attrs_fields.contains(name.id.as_str()))
+}
+
 fn is_checkable_method(
     stmt: &Stmt,
     node: &StmtFunctionDef,
     decorator_aliases: &HashMap<String, String>,
+    attrs_fields: &HashSet<String>,
 ) -> bool {
     if node.name.id.starts_with('_') {
         return false;
@@ -440,11 +504,11 @@ fn is_checkable_method(
     if forwards_to_same_named_super_method(stmt, node.name.id.as_str()) {
         return false;
     }
-    has_only_safe_decorators(
-        &node.decorator_list,
-        SAFE_METHOD_DECORATORS,
-        decorator_aliases,
-    )
+    node.decorator_list.iter().all(|decorator| {
+        is_attrs_field_hook_decorator(&decorator.expression, attrs_fields)
+            || decorator_name(&decorator.expression, decorator_aliases)
+                .is_some_and(|name| SAFE_METHOD_DECORATORS.contains(&name.as_str()))
+    })
 }
 
 /// Return whether a method participates in a cooperative super call.
@@ -949,6 +1013,88 @@ mod tests {
         let names = method_names(&modules);
         assert!(!names.contains(&("Service".to_string(), "__init__".to_string())));
         assert!(!names.contains(&("Service".to_string(), "_helper".to_string())));
+    }
+
+    #[test]
+    fn attrs_define_class_is_still_checkable() {
+        let tmp = TempDir::new().unwrap();
+        write(
+            tmp.path(),
+            "src/pkg/mod.py",
+            "import attrs\n\n\n@attrs.define\nclass Service:\n    def helper(self) -> int:\n        return 1\n",
+        );
+        let modules = collect_modules(&source_roots(tmp.path()));
+        assert!(method_names(&modules).contains(&("Service".to_string(), "helper".to_string())));
+    }
+
+    #[test]
+    fn attrs_field_validator_is_flagged_when_unreferenced_elsewhere() {
+        let tmp = TempDir::new().unwrap();
+        write(
+            tmp.path(),
+            "src/pkg/mod.py",
+            "import attrs\n\n\n@attrs.define\nclass Foo:\n    some_property = attrs.field()\n\n    @some_property.default\n    def _get_stuff(self):\n        return []\n\n    @some_property.validator\n    def validate_stuff(self, attribute, value):\n        pass\n",
+        );
+        let modules = collect_modules(&source_roots(tmp.path()));
+        let names = method_names(&modules);
+        // `validate_stuff` is public and never referenced by name outside the
+        // class (attrs wires it up via the field object, not the method
+        // name), so it is a real candidate for privatization.
+        assert!(names.contains(&("Foo".to_string(), "validate_stuff".to_string())));
+        // `_get_stuff` is already private by naming convention.
+        assert!(!names.contains(&("Foo".to_string(), "_get_stuff".to_string())));
+    }
+
+    #[test]
+    fn attrs_field_default_hook_with_public_name_is_flagged_when_unreferenced_elsewhere() {
+        let tmp = TempDir::new().unwrap();
+        write(
+            tmp.path(),
+            "src/pkg/mod.py",
+            "import attrs\n\n\n@attrs.define\nclass Foo:\n    some_property = attrs.field()\n\n    @some_property.default\n    def build_default(self):\n        return []\n",
+        );
+        let modules = collect_modules(&source_roots(tmp.path()));
+        assert!(method_names(&modules).contains(&("Foo".to_string(), "build_default".to_string())));
+    }
+
+    #[test]
+    fn attrs_field_hooks_are_recognized_through_arbitrary_import_aliases() {
+        let tmp = TempDir::new().unwrap();
+        write(
+            tmp.path(),
+            "src/pkg/mod.py",
+            "from attrs import foo, define as blah, field as fizz, bar\n\n\n@blah\nclass Foo:\n    some_property = fizz()\n\n    @some_property.validator\n    def validate_stuff(self, attribute, value):\n        pass\n",
+        );
+        let modules = collect_modules(&source_roots(tmp.path()));
+        assert!(method_names(&modules).contains(&("Foo".to_string(), "validate_stuff".to_string())));
+    }
+
+    #[test]
+    fn attrs_field_hooks_are_recognized_via_legacy_attr_module() {
+        let tmp = TempDir::new().unwrap();
+        write(
+            tmp.path(),
+            "src/pkg/mod.py",
+            "import attr\n\n\n@attr.define\nclass Foo:\n    some_property = attr.field()\n\n    @some_property.validator\n    def validate_stuff(self, attribute, value):\n        pass\n",
+        );
+        let modules = collect_modules(&source_roots(tmp.path()));
+        assert!(method_names(&modules).contains(&("Foo".to_string(), "validate_stuff".to_string())));
+    }
+
+    #[test]
+    fn decorator_named_default_on_non_attrs_field_is_not_checked() {
+        let tmp = TempDir::new().unwrap();
+        write(
+            tmp.path(),
+            "src/pkg/mod.py",
+            "class Foo:\n    some_property = 1\n\n    @some_property.validator\n    def validate_stuff(self, attribute, value):\n        pass\n",
+        );
+        let modules = collect_modules(&source_roots(tmp.path()));
+        // `some_property` was never assigned via `attrs.field(...)`, so this
+        // decorator is unrecognized and the method stays unsafe to rename.
+        assert!(
+            !method_names(&modules).contains(&("Foo".to_string(), "validate_stuff".to_string()))
+        );
     }
 
     #[test]
